@@ -1,4 +1,4 @@
-import { APP_ID, MoneybirdError, getSettings, missingSettings, salesTaxRates, connectionError } from './lib/moneybird';
+import { APP_ID, MoneybirdError, getSettings, missingSettings, salesTaxRates, connectionError, stopReason } from './lib/moneybird';
 import { ORDER_EXPAND, logResult, syncOrder } from './lib/invoices';
 
 export const config: SwellConfig = {
@@ -64,7 +64,13 @@ export default async function (req: SwellRequest) {
   const sent: string[] = [];
   const skipped: string[] = [];
   const failed: string[] = [];
+  let stoppedBecause: string | undefined;
   for (const order of orders) {
+    // the app was turned off while the action ran: send nothing more
+    stoppedBecause = await stopReason(req.swell);
+    if (stoppedBecause) {
+      break;
+    }
     const result = await syncOrder(req.swell, settings, order, options);
     logResult(`order ${order.number}`, result);
     if (result.status === 'sent' || result.status === 'updated') {
@@ -82,7 +88,7 @@ export default async function (req: SwellRequest) {
     }
   }
 
-  const message = summary(sent, skipped, failed, orders.length);
+  const message = summary(sent, skipped, failed, orders.length, stoppedBecause);
   if (!sent.length) {
     fail(message);
   }
@@ -96,13 +102,13 @@ function stopsAll(err: unknown): boolean {
 const list = (items: string[]) => `${items.slice(0, 5).join(' · ')}${items.length > 5 ? ` and ${items.length - 5} more` : ''}`;
 
 // e.g. "Sent 2 orders to Moneybird: 100546 (created, marked as sent, payment registered) · …. Skipped: 100547: order is not paid."
-export function summary(sent: string[], skipped: string[], failed: string[], total: number): string {
+export function summary(sent: string[], skipped: string[], failed: string[], total: number, stoppedBecause?: string): string {
   const parts = [
     sent.length ? `Sent ${sent.length} order${sent.length === 1 ? '' : 's'} to Moneybird: ${list(sent)}.` : 'Nothing sent to Moneybird.',
   ];
   if (failed.length) parts.push(`Failed: ${list(failed)}`);
   if (skipped.length) parts.push(`Skipped: ${list(skipped)}.`);
   const stopped = total - sent.length - failed.length - skipped.length;
-  if (stopped > 0) parts.push(`Stopped before ${stopped} more.`);
+  if (stopped > 0) parts.push(`Stopped before ${stopped} more${stoppedBecause ? `: ${stoppedBecause}` : ''}.`);
   return parts.join(' ');
 }

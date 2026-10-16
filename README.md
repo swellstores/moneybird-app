@@ -146,9 +146,10 @@ while the app is off:
 With **Enabled** off:
 
 - the event functions return before loading any record or calling Moneybird;
-- **Send to Moneybird** refuses with "The Moneybird app is turned off in its settings.";
+- **Send to Moneybird** refuses with "The Moneybird app is turned off in its settings.", and one that is running
+  sends no more orders ("Stopped before 2 more: the app was turned off in its settings.");
 - **Send existing orders** doesn't start ("Import not started: the Moneybird app is turned off in its settings."),
-  and a running import stops before its next page;
+  and a running import checks the settings before each order and stops, failing with the totals so far;
 - **Test connection** still works and says the app is off.
 
 The same happens, with an error in the function log, while the API token or Administration ID is missing.

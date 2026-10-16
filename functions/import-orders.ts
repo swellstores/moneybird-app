@@ -1,4 +1,4 @@
-import { APP_ID, MoneybirdError, connectionError, getSettings, missingSettings, salesTaxRates, type SwellClient } from './lib/moneybird';
+import { APP_ID, MoneybirdError, connectionError, getSettings, missingSettings, salesTaxRates, stopReason, type SwellClient } from './lib/moneybird';
 import { ORDER_EXPAND, syncOrder } from './lib/invoices';
 
 export const config = {
@@ -99,8 +99,8 @@ export default class ImportOrders {
         // settings are read in each page so the API token stays out of step output
         const settings = getSettings(await req.swell.settings());
         const empty = { ...emptyStats(), count: 0, last_id: null };
-        if (!settings.enabled) return { ...empty, stopped: 'the app was turned off in its settings' };
-        if (missingSettings(settings).length) return { ...empty, stopped: 'the API token or Administration ID was removed from the settings' };
+        const stopped = await stopReason(req.swell);
+        if (stopped) return { ...empty, stopped };
 
         const orders = await fetchOrders(req.swell, check.since, afterId);
         const stats = emptyStats();
@@ -108,6 +108,9 @@ export default class ImportOrders {
           const taxRates = await salesTaxRates(settings);
           // one at a time, to stay within Moneybird's rate limit; finished orders come back as unchanged
           for (const order of orders) {
+            // turning the app off stops the run before the next order, not only before the next page
+            const reason = await stopReason(req.swell);
+            if (reason) return { ...stats, count: 0, last_id: null, stopped: reason };
             const result = await syncOrder(req.swell, settings, order, { appId, taxRates });
             if (result.status === 'failed') {
               // a temporary error throws so step.do runs the page again later
@@ -133,7 +136,7 @@ export default class ImportOrders {
         throw new Error(`Import failed on page ${page}. ${result.error} Before failing: ${totalsText(totals)}.`);
       }
       if (result.stopped) {
-        throw new Error(`Import stopped: ${result.stopped}. Before stopping: ${totalsText(totals)}.`);
+        throw new Error(`Import stopped: ${result.stopped}. Before stopping: ${totalsText(addStats(totals, result))}.`);
       }
 
       totals = addStats(totals, result);

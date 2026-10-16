@@ -89,6 +89,14 @@ export async function loadSettings(swell: Pick<SwellClient, 'settings'>): Promis
   return settings;
 }
 
+// read the settings again in a long run; why it must stop, or undefined while the app is on and set up
+export async function stopReason(swell: Pick<SwellClient, 'settings'>): Promise<string | undefined> {
+  const settings = getSettings(await swell.settings());
+  if (!settings.enabled) return 'the app was turned off in its settings';
+  if (missingSettings(settings).length) return 'the API token or Administration ID was removed from the settings';
+  return undefined;
+}
+
 // Error returned by the Moneybird API (or a network failure when status is 0)
 export class MoneybirdError extends Error {
   status: number;

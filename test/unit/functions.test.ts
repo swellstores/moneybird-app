@@ -247,6 +247,14 @@ describe("send-to-moneybird", () => {
     await expectFailure(sendToMoneybird(request(action({ source: "bulk", selection: { query: {} } }), { orders }).req), /Failed: 100546: Couldn't create the invoice: Moneybird rejected the API token.* Stopped before 1 more\.$/);
   });
 
+  it("sends nothing more once the app is turned off during the action", async () => {
+    const fetchMock = mockMoneybird();
+    const { req, swell } = request(action({ source: "bulk", selection: { query: {} } }), { orders: [makeOrder(), makeOrder({ number: "100547" })] });
+    swell.settings.mockResolvedValueOnce({ moneybird: rawSettings }).mockResolvedValue({ moneybird: off });
+    await expectFailure(sendToMoneybird(req), "Nothing sent to Moneybird. Stopped before 2 more: the app was turned off in its settings.");
+    expect(callKeys(fetchMock)).toEqual(["GET /tax_rates"]);
+  });
+
   it("refuses when the app is off or not set up, and checks the selection", async () => {
     const fetchMock = mockMoneybird();
     await expectFailure(sendToMoneybird(request(action(), {}, off).req), "The Moneybird app is turned off in its settings.");
@@ -289,6 +297,23 @@ describe("import-orders", () => {
     await expect(run({}, off).result).rejects.toThrow("Import not started: the Moneybird app is turned off in its settings.");
     await expect(run({}, { api_token: "t" }).result).rejects.toThrow("Import not started: add the Administration ID in Apps → Moneybird.");
     expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it("stops before the next order when the app is turned off during the run", async () => {
+    const fetchMock = mockMoneybird();
+    const second = makeOrder({ id: "6ad0bd84dfd3c8001209251a", number: "100547" });
+    const { req, swell } = request({ days: "7" }, { pages: [[makeOrder(), second]] });
+    // on for the start, the page and the first order; off before the second order
+    swell.settings
+      .mockResolvedValueOnce({ moneybird: rawSettings })
+      .mockResolvedValueOnce({ moneybird: rawSettings })
+      .mockResolvedValueOnce({ moneybird: rawSettings })
+      .mockResolvedValueOnce({ moneybird: rawSettings })
+      .mockResolvedValue({ moneybird: off });
+    await expect(new ImportOrders().run(req as any, step)).rejects.toThrow(
+      "Import stopped: the app was turned off in its settings. Before stopping: sent 1, finished 0, already in Moneybird 0, skipped 0, failed 0.",
+    );
+    expect(callKeys(fetchMock).filter((k) => k === "POST /sales_invoices")).toHaveLength(1);
   });
 
   it("fails when Moneybird refused every order, and on a rejected token", async () => {
