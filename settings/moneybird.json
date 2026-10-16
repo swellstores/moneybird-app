@@ -1,7 +1,7 @@
 {
   "$schema": "https://json.swell.store/setting.json",
   "label": "Moneybird",
-  "description": "Send paid Swell orders to Moneybird as invoices, register their payments, and book refunds as credit invoices. In Moneybird open Settings → External applications and AI connections → New API token, and give it access to sales invoices and settings.",
+  "description": "Send paid Swell orders to Moneybird as invoices, register their payments, and book refunds as credit invoices. In Moneybird open Settings → Integrations → External applications → New API token, and give it access to sales invoices and settings.",
   "actions": [
     {
       "id": "test_connection",
@@ -51,7 +51,7 @@
       "label": "API token",
       "type": "secret",
       "required": true,
-      "description": "Moneybird → Settings → External applications and AI connections → New API token, with access to sales invoices and settings"
+      "description": "Moneybird → Settings → Integrations → External applications → New API token, with access to sales invoices and settings"
     },
     {
       "id": "administration_id",

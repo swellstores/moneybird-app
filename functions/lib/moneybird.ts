@@ -180,7 +180,7 @@ export function connectionError(err: unknown): string {
     if (err.status === 401) {
       return (
         `Moneybird rejected the API token (${err.message}). Create a new one in Moneybird → Settings → ` +
-        'External applications and AI connections → New API token, and paste it in the app settings.'
+        'Integrations → External applications → New API token, and paste it in the app settings.'
       );
     }
     if (err.status === 403) {

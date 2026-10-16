@@ -191,7 +191,7 @@ add the …").
 
 ## Setup
 
-1. In Moneybird open **Settings → External applications and AI connections → New API token**, give it access to
+1. In Moneybird open **Settings → Integrations → External applications → New API token**, give it access to
    sales invoices and settings, and copy it.
 2. Install the app, open **Apps → Moneybird → Settings**, paste the token, save, and run **Test connection**.
 3. Copy your administration's ID into **Administration ID**, save, and run **Test connection** again. It lists your
