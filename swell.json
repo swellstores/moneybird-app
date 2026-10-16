@@ -6,5 +6,31 @@
   "version": "1.0.0",
   "permissions": [],
   "support_email": "support@swell.is",
-  "repository_url": "https://github.com/swellstores/moneybird-app"
+  "repository_url": "https://github.com/swellstores/moneybird-app",
+  "images": [
+    {
+      "id": "settings",
+      "title": "Connected with an API token",
+      "description": "Paste your Moneybird API token, then test the connection to find your administration.",
+      "image_src": "assets/screenshots/1-settings.png"
+    },
+    {
+      "id": "invoices",
+      "title": "Invoices your way",
+      "description": "Numbered sales invoices, marked as sent or emailed, or external invoices with the Swell order number.",
+      "image_src": "assets/screenshots/2-invoices.png"
+    },
+    {
+      "id": "payments",
+      "title": "Paid and refunded, booked for you",
+      "description": "Payments are registered on the invoice, and refunds become credit invoices.",
+      "image_src": "assets/screenshots/3-payments.png"
+    },
+    {
+      "id": "order",
+      "title": "The invoice on the order",
+      "description": "Invoice number, status, payment and credit invoices on the order's Moneybird tab.",
+      "image_src": "assets/screenshots/4-order.png"
+    }
+  ]
 }

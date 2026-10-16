@@ -232,6 +232,8 @@ models/                # Moneybird fields on orders and accounts
 content/               # Moneybird tabs, order list column and actions
 settings/moneybird.json
 test/unit/             # vitest unit tests (Moneybird API mocked with fetch)
+assets/icon.png        # app icon
+assets/screenshots/    # app listing images, listed in swell.json "images"
 ```
 
 ```bash
