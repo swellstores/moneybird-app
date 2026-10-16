@@ -3,6 +3,9 @@
   "id": "moneybird",
   "name": "Moneybird",
   "type": "integration",
+  "integrations": [
+    "moneybird"
+  ],
   "version": "1.0.0",
   "permissions": [],
   "support_email": "support@swell.is",
