@@ -92,6 +92,28 @@ export async function findContact(settings: MoneybirdSettings, customerId: strin
   }
 }
 
+// Moneybird adds a contact person for every new firstname/lastname sent to a contact; rename the person with the
+// contact's current name first, so a changed name updates that person instead of adding another one
+export async function renameContactPerson(settings: MoneybirdSettings, contact: any, fields: Record<string, any>): Promise<void> {
+  const same = (a: unknown, b: unknown) => (a || '') === (b || '');
+  const firstname = fields.firstname ?? contact?.firstname;
+  const lastname = fields.lastname ?? contact?.lastname;
+  if (same(firstname, contact?.firstname) && same(lastname, contact?.lastname)) {
+    return;
+  }
+  const people: any[] = Array.isArray(contact?.contact_people) ? contact.contact_people : [];
+  if (people.some((person) => same(person.firstname, firstname) && same(person.lastname, lastname))) {
+    return;
+  }
+  const person = people.find((person) => same(person.firstname, contact.firstname) && same(person.lastname, contact.lastname));
+  if (!person) {
+    return;
+  }
+  await moneybirdRequest(settings, 'PATCH', `/contacts/${contact.id}/contact_people/${person.id}`, {
+    contact_person: { firstname: firstname || null, lastname: lastname || null },
+  });
+}
+
 // Moneybird refused the contact's email: it checks that the domain can receive mail
 export function isEmailRefused(err: unknown): boolean {
   return err instanceof MoneybirdError && err.status === 422 && /send_invoices_to_email/.test(err.message);

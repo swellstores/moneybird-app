@@ -160,7 +160,38 @@ describe("account-events", () => {
   it("uses the saved contact ID", async () => {
     const fetchMock = mockMoneybird();
     await accountEvents(request(event({ phone: "1" }, { $app: { moneybird: { moneybird_contact_id: CONTACT_ID } } })).req);
-    expect(callKeys(fetchMock)).toEqual([`PATCH /contacts/${CONTACT_ID}`]);
+    expect(callKeys(fetchMock)).toEqual([`GET /contacts/${CONTACT_ID}`, `PATCH /contacts/${CONTACT_ID}`]);
+  });
+
+  it("renames the contact person instead of letting Moneybird add one", async () => {
+    const person = (id: string, firstname: string, lastname: string) => ({ id, firstname, lastname });
+    const contact = (people: any[]) =>
+      ok({ id: CONTACT_ID, company_name: "Acme", firstname: "Jane", lastname: "Doe", contact_people: people });
+    const renamed = event({ first_name: "Janet" }, { first_name: "Janet" });
+
+    let fetchMock = mockMoneybird({
+      [`GET /contacts/customer_id/${ACCOUNT_ID}`]: contact([person("p1", "Jane", "Doe"), person("p2", "Bob", "Roe")]),
+      [`PATCH /contacts/${CONTACT_ID}/contact_people/p1`]: ok({ id: "p1" }),
+    });
+    await accountEvents(request(renamed).req);
+    expect(callKeys(fetchMock)).toEqual([
+      `GET /contacts/customer_id/${ACCOUNT_ID}`,
+      `PATCH /contacts/${CONTACT_ID}/contact_people/p1`,
+      `PATCH /contacts/${CONTACT_ID}`,
+    ]);
+    expect(bodyOf(fetchMock, `PATCH /contacts/${CONTACT_ID}/contact_people/p1`)).toEqual({ contact_person: { firstname: "Janet", lastname: "Doe" } });
+
+    // same name, a person with the new name already, or no person with the old name: nothing to rename
+    for (const [record, people] of [
+      [event({ phone: "1" }, { phone: "1" }), [person("p1", "Jane", "Doe")]],
+      [renamed, [person("p1", "Jane", "Doe"), person("p2", "Janet", "Doe")]],
+      [renamed, [person("p2", "Bob", "Roe")]],
+    ] as const) {
+      vi.restoreAllMocks();
+      fetchMock = mockMoneybird({ [`GET /contacts/customer_id/${ACCOUNT_ID}`]: contact([...people]) });
+      await accountEvents(request(record).req);
+      expect(callKeys(fetchMock)).toEqual([`GET /contacts/customer_id/${ACCOUNT_ID}`, `PATCH /contacts/${CONTACT_ID}`]);
+    }
   });
 
   it("ignores the app's own writes, other changes, customers without a contact, and turned off sync", async () => {

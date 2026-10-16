@@ -82,6 +82,7 @@ const DEFAULT_ROUTES: Routes = {
   "GET /financial_accounts": ok([{ id: "fa_1", name: "Mollie", type: "PaymentServiceProvider" }]),
   [`GET /contacts/customer_id/${ACCOUNT_ID}`]: ok({ id: CONTACT_ID }),
   "POST /contacts": ok({ id: CONTACT_ID }, 201),
+  [`GET /contacts/${CONTACT_ID}`]: ok({ id: CONTACT_ID }),
   [`PATCH /contacts/${CONTACT_ID}`]: ok({ id: CONTACT_ID }),
   "GET /sales_invoices/find_by_reference/Order%20100546": fail(404, "record not found"),
   "POST /sales_invoices": ok(makeInvoice(), 201),

@@ -86,6 +86,16 @@ they have one; an email Moneybird refuses is left out and the rest is updated. T
 Moneybird, including the delivery method (email when the customer has an email). Contacts are created only with the
 customer's first order sent to Moneybird.
 
+Moneybird adds a new contact person every time a contact gets a first and last name that none of its people has. So
+when the name changes, the app first renames the contact person who has the contact's current name
+(`PATCH /contacts/<id>/contact_people/<person id>`) and then updates the contact; the contact keeps one person instead
+of one per name. When no person has the current name, nothing is renamed.
+
+A customer who has no orders in Moneybird yet has no contact there, so updating them changes nothing in Moneybird; the
+contact is created when their first order is sent (paid, **Send to Moneybird** or **Send existing orders**). This is on
+purpose: Moneybird is for invoicing, and creating a contact for every customer who registers or edits their account
+would fill it with people who never bought anything.
+
 ### Dashboard
 
 - **Moneybird tab** on orders: invoice number (the reference for external invoices), state, link to Moneybird, when

@@ -1,5 +1,5 @@
 import { APP_ID, MoneybirdError, appData, connectionError, loadSettings, moneybirdRequest } from './lib/moneybird';
-import { contactFields, findContact, isEmailRefused } from './lib/invoices';
+import { contactFields, findContact, isEmailRefused, renameContactPerson } from './lib/invoices';
 
 export const config: SwellConfig = {
   description: "Update the Moneybird contact when a customer's details change",
@@ -30,11 +30,14 @@ export default async function (req: SwellRequest) {
   }
 
   try {
-    const contactId = appData(data, req.appId || APP_ID).moneybird_contact_id || (await findContact(settings, data.id))?.id;
+    const savedId = appData(data, req.appId || APP_ID).moneybird_contact_id;
+    const contact = savedId ? await moneybirdRequest(settings, 'GET', `/contacts/${savedId}`) : await findContact(settings, data.id);
+    const contactId = contact?.id;
     if (!contactId) {
       return;
     }
     const { customer_id, ...fields } = contactFields(data);
+    await renameContactPerson(settings, contact, fields);
     try {
       await moneybirdRequest(settings, 'PATCH', `/contacts/${contactId}`, { contact: fields });
     } catch (err) {
