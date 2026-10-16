@@ -1,0 +1,215 @@
+{
+  "$schema": "https://json.swell.store/setting.json",
+  "label": "Moneybird",
+  "description": "Send paid Swell orders to Moneybird as invoices, register their payments, and book refunds as credit invoices. In Moneybird open Settings → External applications and AI connections → New API token, and give it access to sales invoices and settings.",
+  "actions": [
+    {
+      "id": "test_connection",
+      "label": "Test connection",
+      "function": "test-connection",
+      "loading_label": "Testing…",
+      "hint": "Checks the API token and administration, and lists the tax rates and financial accounts with their IDs"
+    },
+    {
+      "id": "import_orders",
+      "label": "Send existing orders",
+      "function": "import-orders",
+      "loading_label": "Starting…",
+      "hint": "Sends paid orders that aren't in Moneybird yet",
+      "modal": {
+        "title": "Send existing orders",
+        "description": "Creates a Moneybird invoice for each paid order that the app hasn't sent yet, using the current settings, and registers its payment. Refunds made before aren't sent. Runs in the background; Moneybird allows about 30 orders every 5 minutes.",
+        "submit_label": "Send orders",
+        "fields": [
+          {
+            "id": "days",
+            "label": "Orders placed in the last",
+            "type": "select",
+            "default": "30",
+            "options": [
+              {
+                "label": "7 days",
+                "value": "7"
+              },
+              {
+                "label": "30 days",
+                "value": "30"
+              },
+              {
+                "label": "90 days",
+                "value": "90"
+              }
+            ]
+          }
+        ]
+      }
+    }
+  ],
+  "fields": [
+    {
+      "id": "api_token",
+      "label": "API token",
+      "type": "secret",
+      "required": true,
+      "description": "Moneybird → Settings → External applications and AI connections → New API token, with access to sales invoices and settings"
+    },
+    {
+      "id": "administration_id",
+      "label": "Administration ID",
+      "type": "short_text",
+      "placeholder": "123456789012345678",
+      "description": "The number after moneybird.com/ in your Moneybird address. Leave empty and run Test connection to find it."
+    },
+    {
+      "id": "enabled",
+      "label": "Enabled",
+      "type": "boolean",
+      "ui": "toggle",
+      "default": true,
+      "description": "Turns off everything the app sends to Moneybird, without uninstalling it"
+    },
+    {
+      "type": "field_group",
+      "label": "Invoices",
+      "fields": [
+        {
+          "id": "invoice_type",
+          "label": "Book orders as",
+          "type": "select",
+          "default": "sales_invoice",
+          "description": "Sales invoices get a Moneybird invoice number and can be emailed from Moneybird. External sales invoices only record the order, with the Swell order number.",
+          "options": [
+            {
+              "value": "sales_invoice",
+              "label": "Sales invoices"
+            },
+            {
+              "value": "external_sales_invoice",
+              "label": "External sales invoices"
+            }
+          ]
+        },
+        {
+          "id": "finalize",
+          "label": "New sales invoices",
+          "type": "select",
+          "default": "manual",
+          "conditions": {
+            "invoice_type": {
+              "$ne": "external_sales_invoice"
+            }
+          },
+          "description": "Draft invoices have no number and aren't booked until you send them in Moneybird; their payment isn't registered.",
+          "options": [
+            {
+              "value": "manual",
+              "label": "Mark as sent, without emailing"
+            },
+            {
+              "value": "email",
+              "label": "Email to the customer"
+            },
+            {
+              "value": "draft",
+              "label": "Leave as draft"
+            }
+          ]
+        },
+        {
+          "id": "workflow_id",
+          "label": "Workflow ID",
+          "type": "short_text",
+          "conditions": {
+            "invoice_type": {
+              "$ne": "external_sales_invoice"
+            }
+          },
+          "description": "Optional. Moneybird → Settings → Workflows; empty uses your default invoice workflow."
+        },
+        {
+          "id": "document_style_id",
+          "label": "Document style ID",
+          "type": "short_text",
+          "conditions": {
+            "invoice_type": {
+              "$ne": "external_sales_invoice"
+            }
+          },
+          "description": "Optional. Moneybird → Settings → Document styles; empty uses your default style."
+        },
+        {
+          "id": "default_tax_rate_id",
+          "label": "Default tax rate ID",
+          "type": "short_text",
+          "description": "Optional. Each line gets the Moneybird sales tax rate with the percentage Swell charged; this rate is used when none matches. Test connection lists the IDs."
+        },
+        {
+          "id": "ledger_account_id",
+          "label": "Revenue ledger account ID",
+          "type": "short_text",
+          "description": "Optional. Books all lines to this revenue account; empty uses Moneybird's default."
+        }
+      ]
+    },
+    {
+      "type": "field_group",
+      "label": "Payments and refunds",
+      "fields": [
+        {
+          "id": "register_payments",
+          "label": "Register payments",
+          "type": "boolean",
+          "ui": "toggle",
+          "default": true,
+          "description": "Registers the Swell payment on the invoice, so it shows as paid"
+        },
+        {
+          "id": "financial_account_id",
+          "label": "Financial account ID",
+          "type": "short_text",
+          "conditions": {
+            "register_payments": {
+              "$ne": false
+            }
+          },
+          "description": "Optional. The Moneybird account the payments arrive in, e.g. your payment provider's. Test connection lists the IDs."
+        },
+        {
+          "id": "payment_without_proof",
+          "label": "Payments without proof",
+          "type": "boolean",
+          "ui": "toggle",
+          "default": false,
+          "description": "Registers payments as 'payment without proof'. Turn on 'Payments without proof' in Moneybird first.",
+          "conditions": {
+            "register_payments": {
+              "$ne": false
+            }
+          }
+        },
+        {
+          "id": "send_refunds",
+          "label": "Send refunds",
+          "type": "boolean",
+          "ui": "toggle",
+          "default": true,
+          "description": "Books each Swell refund as a credit invoice (or a negative external invoice) for the refunded amount"
+        }
+      ]
+    },
+    {
+      "type": "field_group",
+      "label": "Contacts",
+      "fields": [
+        {
+          "id": "sync_contacts",
+          "label": "Update contacts",
+          "type": "boolean",
+          "ui": "toggle",
+          "default": true,
+          "description": "Each customer becomes a Moneybird contact with their first order. With this on, changes to the customer's name, email, phone, address or VAT number are sent to the contact."
+        }
+      ]
+    }
+  ]
+}

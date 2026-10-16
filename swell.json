@@ -1,0 +1,10 @@
+{
+  "description": "Send orders, payments and refunds to Moneybird",
+  "id": "moneybird",
+  "name": "Moneybird",
+  "type": "integration",
+  "version": "1.0.0",
+  "permissions": [],
+  "support_email": "support@swell.is",
+  "repository_url": "https://github.com/swellstores/moneybird-app"
+}

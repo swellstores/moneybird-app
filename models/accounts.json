@@ -1,0 +1,15 @@
+{
+  "$schema": "https://json.swell.store/model.json",
+  "collection": "accounts",
+  "description": "Moneybird contact of the customer",
+  "fields": {
+    "moneybird_contact_id": {
+      "type": "string",
+      "description": "ID of the Moneybird contact"
+    },
+    "moneybird_contact_url": {
+      "type": "string",
+      "description": "Link to the contact in Moneybird"
+    }
+  }
+}

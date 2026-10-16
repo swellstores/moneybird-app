@@ -1,0 +1,30 @@
+{
+  "$schema": "https://json.swell.store/content.json",
+  "collection": "accounts",
+  "description": "Moneybird contact on the customer page",
+  "fields": [
+    {
+      "id": "moneybird_contact_url",
+      "label": "Moneybird contact",
+      "type": "url",
+      "readonly": true,
+      "description": "Created with the customer's first order sent to Moneybird"
+    }
+  ],
+  "views": [
+    {
+      "id": "edit",
+      "tabs": [
+        {
+          "id": "moneybird",
+          "label": "Moneybird",
+          "fields": [
+            {
+              "id": "moneybird_contact_url"
+            }
+          ]
+        }
+      ]
+    }
+  ]
+}

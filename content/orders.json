@@ -1,0 +1,149 @@
+{
+  "$schema": "https://json.swell.store/content.json",
+  "collection": "orders",
+  "description": "Moneybird invoice on the order page",
+  "fields": [
+    {
+      "id": "moneybird_invoice_number",
+      "label": "Invoice",
+      "type": "short_text",
+      "readonly": true
+    },
+    {
+      "id": "moneybird_status",
+      "label": "Status in Moneybird",
+      "type": "short_text",
+      "readonly": true,
+      "description": "When the app last changed the invoice"
+    },
+    {
+      "id": "moneybird_invoice_url",
+      "label": "Open in Moneybird",
+      "type": "url",
+      "readonly": true
+    },
+    {
+      "id": "moneybird_paid_at",
+      "label": "Payment registered",
+      "type": "datetime",
+      "readonly": true
+    },
+    {
+      "id": "moneybird_refund_total",
+      "label": "Refunded in Moneybird",
+      "type": "number",
+      "readonly": true
+    },
+    {
+      "id": "moneybird_credit_invoices",
+      "label": "Credit invoices",
+      "type": "long_text",
+      "readonly": true
+    },
+    {
+      "id": "moneybird_note",
+      "label": "Note",
+      "type": "long_text",
+      "readonly": true
+    },
+    {
+      "id": "moneybird_error",
+      "label": "Error",
+      "type": "long_text",
+      "readonly": true
+    }
+  ],
+  "views": [
+    {
+      "id": "list",
+      "fields": [
+        {
+          "id": "moneybird_invoice_number",
+          "label": "Moneybird"
+        }
+      ],
+      "bulk_actions": [
+        {
+          "id": "send_to_moneybird",
+          "label": "Send to Moneybird",
+          "function": "send-to-moneybird",
+          "loading_label": "Sending to Moneybird…",
+          "hint": "Sends up to 10 selected paid orders that aren't in Moneybird yet"
+        }
+      ]
+    },
+    {
+      "id": "edit",
+      "extra_actions": [
+        {
+          "id": "send_to_moneybird",
+          "label": "Send to Moneybird",
+          "function": "send-to-moneybird",
+          "loading_label": "Sending to Moneybird…",
+          "hint": "Creates the invoice and registers the payment, or finishes what's missing"
+        }
+      ],
+      "tabs": [
+        {
+          "id": "moneybird",
+          "label": "Moneybird",
+          "fields": [
+            {
+              "type": "field_row",
+              "fields": [
+                {
+                  "id": "moneybird_invoice_number",
+                  "admin_span": 2
+                },
+                {
+                  "id": "moneybird_status",
+                  "admin_span": 2
+                }
+              ]
+            },
+            {
+              "id": "moneybird_invoice_url"
+            },
+            {
+              "type": "field_row",
+              "fields": [
+                {
+                  "id": "moneybird_paid_at",
+                  "admin_span": 2
+                },
+                {
+                  "id": "moneybird_refund_total",
+                  "admin_span": 2
+                }
+              ]
+            },
+            {
+              "id": "moneybird_credit_invoices",
+              "conditions": {
+                "moneybird_credit_invoices": {
+                  "$ne": null
+                }
+              }
+            },
+            {
+              "id": "moneybird_note",
+              "conditions": {
+                "moneybird_note": {
+                  "$ne": null
+                }
+              }
+            },
+            {
+              "id": "moneybird_error",
+              "conditions": {
+                "moneybird_error": {
+                  "$ne": null
+                }
+              }
+            }
+          ]
+        }
+      ]
+    }
+  ]
+}
