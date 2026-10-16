@@ -6,8 +6,9 @@ date. It uses the [Moneybird API v2](https://developer.moneybird.com) with a per
 
 ## Features
 
-All calls go to `https://moneybird.com/api/v2/<administration id>/…json` with `Authorization: Bearer <API token>`.
-Moneybird IDs are 18-digit numbers and are kept as strings.
+All calls go to `https://moneybird.com/api/v2/<administration id>/….json` (the list of administrations to
+`/api/v2/administrations.json`) with `Authorization: Bearer <API token>`. Moneybird IDs are 18-digit numbers and are
+kept as strings.
 
 | Swell event                | What happens in Moneybird                                     | Function                     |
 | -------------------------- | ------------------------------------------------------------- | ---------------------------- |
@@ -20,9 +21,10 @@ Moneybird IDs are 18-digit numbers and are kept as strings.
 When an order is paid (`order.paid`), and it isn't a draft and its total is above 0:
 
 1. **Contact** – the contact whose `customer_id` is the Swell customer ID
-   (`GET /contacts/customer_id/<id>`), else a new contact (`POST /contacts`) with the customer's name, the order's
-   billing address (shipping address when there's no billing address), phone, email (`send_invoices_to_email`, delivery
-   by email) and VAT number (`tax_number`). Without a name the company or email becomes `company_name`. Moneybird
+   (`GET /contacts/customer_id/<id>`), else a new contact (`POST /contacts`) with the customer's name, the billing
+   address (the order's, else the customer's saved one; the shipping address when neither has a street or city),
+   phone, email (`send_invoices_to_email`, delivery by email), VAT number (`tax_number`) and the address's company as
+   `company_name`. Without a name or company, the customer's full name field or email becomes `company_name`. Moneybird
    checks that the email's domain can receive mail; when it refuses the email, the contact is created without it
    (delivery `Manual`) and the order's note says so. The contact's ID and link are saved on the customer.
 2. **Invoice** – with **Book orders as**:
@@ -49,7 +51,8 @@ later **Send to Moneybird** continues where the last run stopped. An invoice kee
 (`Shipping – <service>`, after the shipping discount). `prices_are_incl_tax` follows the store's
 `item_tax_included`; shipping priced on the other basis is converted with its tax. Each line gets the Moneybird sales
 tax rate (`tax_rate_type: sales_invoice`, active) with the percentage Swell charged on it, preferring a rate for the
-billing country, then one without a country; when none matches, the **Default tax rate ID**, else Moneybird's default.
+billing country (the shipping country without one), then one without a country; when none matches, the **Default tax
+rate ID**, else Moneybird's default.
 **Revenue ledger account ID** is set on every line when given. Gift cards and account credit are payments in Swell and
 aren't invoice lines.
 
@@ -60,20 +63,27 @@ grand total.
 
 With **Send refunds** on, each successful Swell refund of an order that is in Moneybird becomes:
 
-- a credit sales invoice (reference `Refund <refund number> of order <number>`) for sales invoices, numbered like
-  invoices and paid with a negative payment; or
-- a negative external sales invoice (reference `<order number>-R<refund number>`) for external invoices.
+- a credit sales invoice (reference `Refund <refund number> of order <number>`, dated on the refund) for sales
+  invoices; **New sales invoices** applies to it like to invoices, and with **Register payments** on it gets a negative
+  payment; or
+- a negative external sales invoice (reference `<order number>-R<refund number>`) for external invoices, with a
+  negative payment when **Register payments** is on.
 
-Its lines are the refunded share of the order, one per tax percentage (`Refund of order <number> (21% tax)`), so the
-tax is reversed in proportion. A refund is never more than the part of the order not refunded in Moneybird yet. Each
-refund is sent once (`moneybird_refunds`, by Swell refund ID); the credit invoice is saved right after it's created,
-so a failure in a later step never creates a second one. Refunds of payments without an order aren't sent.
+The type is the one the order's invoice was created as. Its lines are the refunded share of the order, one per tax
+percentage (`Refund of order <number>`, with `(21% tax)` added when the order has several percentages), so the tax is
+reversed in proportion. A refund is never more than the part of the order not refunded in Moneybird yet.
+
+Each refund is sent once. The credit invoice's ID is saved as soon as it's created (`moneybird_refunds`, by Swell
+refund ID), and the refund counts as done when it's numbered and paid (`moneybird_refunds_done`). If a later step fails
+temporarily, Swell runs the refund event again and the app finishes that credit invoice instead of creating another; a
+payment an earlier run registered isn't registered twice. Refunds of payments without an order aren't sent.
 
 ### Contacts
 
 With **Update contacts** on, a change to a customer's name, email, phone, billing or shipping address or VAT number
 (`account.updated` with these fields in `$event.data`) updates their Moneybird contact (`PATCH /contacts/<id>`), when
-they have one; an email Moneybird refuses is left out and the rest is updated. Contacts are created only with the
+they have one; an email Moneybird refuses is left out and the rest is updated. The Swell values replace the ones in
+Moneybird, including the delivery method (email when the customer has an email). Contacts are created only with the
 customer's first order sent to Moneybird.
 
 ### Dashboard
@@ -83,12 +93,21 @@ customer's first order sent to Moneybird.
   **Moneybird** column with the invoice number.
 - **Moneybird tab** on customers with a link to the contact.
 - **Send to Moneybird** in an order's Actions menu and as a bulk action on up to 10 selected orders: sends paid
-  orders that aren't in Moneybird yet and finishes the ones that stopped halfway.
+  orders that aren't in Moneybird yet and finishes the ones that stopped halfway. Selecting more shows "Select up to
+  10 orders." and sends nothing.
+
+  **Why 10:** the action runs while the admin waits for its answer, in a single function call with a time limit, and
+  Moneybird allows 150 requests per 5 minutes. Each order takes up to 8 requests, so 10 orders (about 80 requests)
+  finish in one call and leave room for the event functions sending new orders at the same time. More orders would
+  risk hitting Moneybird's limit or the time limit halfway. For more orders, use **Send existing orders**: it runs in
+  the background and waits and retries when Moneybird's limit is reached.
 - **Send existing orders** in the app's Actions menu: a background workflow that sends paid orders placed in the last
   7, 30 or 90 days, 10 per page, one order at a time. Refunds made before aren't sent.
 - **Test connection** (below).
 
-Every problem in an action is a red error popup (a `SwellError` with status 400); results are a regular message.
+Every problem in **Send to Moneybird** and **Test connection** is a red error popup (a `SwellError` with status
+400); results are a regular message, and one that lists failed orders next to sent ones stays regular. **Send existing
+orders** reports problems by failing its run.
 
 ### Errors and retries
 
@@ -99,15 +118,18 @@ Every problem in an action is a red error popup (a `SwellError` with status 400)
 | 402                              | "Your Moneybird plan doesn't allow this …" (e.g. the free plan's invoice limit)         |
 | 422                              | "Moneybird refused it: …" with Moneybird's field errors                                  |
 | 429, 5xx, network errors         | Temporary: "… try again later"; the event function throws so Swell runs it again         |
+| Anything else (e.g. 404)         | "Moneybird request failed: …" with the refused call                                       |
 
 A failure is saved on the order as `moneybird_error` ("Couldn't create the invoice: …", "Couldn't register the
 payment: …") and cleared by the next successful step. Event functions rethrow temporary errors only when running again
 can't create a second document: an external invoice or credit invoice whose creation failed with a 5xx or network error
-isn't retried, because Moneybird can't look it up; use **Send to Moneybird** after checking Moneybird. Saving a result
-on the order is only logged when it fails.
+isn't retried, because Moneybird can't look it up. Check Moneybird, then use **Send to Moneybird** for an order; a
+refund in that state has to be booked by hand. The customer-contact update is retried on temporary errors too. Saving a
+result on the order is only logged when it fails.
 
-Moneybird allows 150 requests per 5 minutes. Sending an order takes 4–7 requests, so the import goes one order at a
-time and retries a page that hits the limit (6 times, from 1 minute, doubling).
+Moneybird allows 150 requests per 5 minutes. Sending an order takes 5–9 requests (fewer in the actions, which load
+the tax rates once), so the import goes one order at a time and retries a page that hits the limit (6 times, from 1
+minute, doubling).
 
 ## Settings
 
@@ -119,7 +141,7 @@ time and retries a page that hits the limit (6 times, from 1 minute, doubling).
 | `administration_id`     | text   |                 | Needed to send. Empty: **Test connection** finds it.                                          |
 | `enabled`               | toggle | on              | Turns off everything the app sends.                                                           |
 | `invoice_type`          | select | `sales_invoice` | `sales_invoice` or `external_sales_invoice`.                                                  |
-| `finalize`              | select | `manual`        | Sales invoices: `manual` (mark as sent), `email`, `draft`.                                    |
+| `finalize`              | select | `manual`        | Sales and credit invoices: `manual` (mark as sent), `email`, `draft`.                         |
 | `workflow_id`           | text   |                 | Sales invoices: Moneybird workflow; empty uses the default.                                  |
 | `document_style_id`     | text   |                 | Sales invoices: document style; empty uses the default.                                      |
 | `default_tax_rate_id`   | text   |                 | Tax rate for lines whose percentage has no Moneybird rate.                                   |
@@ -152,7 +174,9 @@ With **Enabled** off:
   and a running import checks the settings before each order and stops, failing with the totals so far;
 - **Test connection** still works and says the app is off.
 
-The same happens, with an error in the function log, while the API token or Administration ID is missing.
+Nothing is sent either while the API token or Administration ID is missing: the event functions log an error, and
+the actions ask for the missing setting ("Add the Administration ID in Apps → Moneybird first.", "Import not started:
+add the …").
 
 ## Setup
 
@@ -175,7 +199,8 @@ The same happens, with an error in the function log, while the API token or Admi
 - **Totals** – Moneybird calculates tax per line, so with prices that exclude tax its total can differ from Swell's by
   a cent; the order's note says so, and the payment registered is Moneybird's unpaid total.
 - **Contacts** are matched by Swell customer ID. A contact created in Moneybird by hand isn't linked unless its
-  customer ID is the Swell customer ID.
+  customer ID is the Swell customer ID. With **Update contacts** on, changes made to a linked contact in Moneybird are
+  overwritten the next time the customer changes in Swell.
 - **Edits after sending** – changing an order in Swell after it was sent doesn't change the invoice.
 - **Rate limit** – Moneybird allows 150 requests per 5 minutes; large imports take a while.
 

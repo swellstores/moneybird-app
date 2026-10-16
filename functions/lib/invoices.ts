@@ -55,7 +55,8 @@ function clean(values: Record<string, any>) {
 
 // Moneybird contact fields from a Swell customer, with the order's billing details when there's an order
 export function contactFields(account: any, order?: any): Record<string, any> {
-  const billing = { ...(account?.billing || {}), ...(order?.billing || {}) };
+  // the order's empty billing fields (method "account") don't replace the customer's saved ones
+  const billing = { ...clean(account?.billing || {}), ...clean(order?.billing || {}) };
   const address = billing.address1 || billing.city ? billing : { ...(order?.shipping || account?.shipping || {}), ...clean(billing) };
   const email = account?.email || order?.billing?.email;
   const firstname = account?.first_name || address.first_name;
@@ -480,7 +481,9 @@ export async function syncRefund(
   const saved = appData(order, appId);
   const refundId = String(refund.id);
   if (!saved.moneybird_invoice_id) return { status: 'skipped', reason: "the order isn't in Moneybird" };
-  if (saved.moneybird_refunds?.[refundId]) return { status: 'unchanged', reason: 'refund already in Moneybird' };
+  if (saved.moneybird_refunds_done?.[refundId]) return { status: 'unchanged', reason: 'refund already in Moneybird' };
+  // a credit invoice an earlier run made but didn't finish (not numbered or not paid)
+  const existingId: string | undefined = saved.moneybird_refunds?.[refundId];
   // never more than the part of the order not refunded in Moneybird yet
   const amount = money(Math.min(money(refund.amount), money(order.grand_total) - money(saved.moneybird_refund_total)));
   if (!(amount > 0)) return { status: 'skipped', reason: money(refund.amount) > 0 ? 'order already fully refunded in Moneybird' : 'refund amount is 0' };
@@ -492,21 +495,27 @@ export async function syncRefund(
   const label = refund.number ? `Refund ${refund.number}` : 'Refund';
 
   try {
-    const { id: contactId } = await ensureContact(swell, typed, order, appId);
-    const rates = options.taxRates ?? (await salesTaxRates(typed));
-    const { details } = detailsAttributes(refundLines(order, amount), rates, typed, order.billing?.country || order.shipping?.country);
-    let invoice = await createDocument(typed, {
-      contactId,
-      reference: type === 'sales_invoice' ? `${label} of order ${order.number}` : `${order.number}-R${refund.number || refundId.slice(-6)}`,
-      date: day(refund.date_created),
-      currency: order.currency,
-      inclTax: Boolean(order.item_tax_included),
-      details,
-      sourceUrl: options.adminUrl ? `${options.adminUrl}/orders/${order.id}` : undefined,
-    });
-    const creditId = String(invoice.id);
-    // saved first, so a retry never creates a second credit invoice for this refund
-    await saveValues(swell, path, { moneybird_refunds: { [refundId]: creditId } }, appId);
+    let invoice: any;
+    if (existingId) {
+      step.name = 'finish the credit invoice';
+      invoice = await moneybirdRequest(typed, 'GET', `/${invoiceKind(type)}/${existingId}`);
+    } else {
+      const { id: contactId } = await ensureContact(swell, typed, order, appId);
+      const rates = options.taxRates ?? (await salesTaxRates(typed));
+      const { details } = detailsAttributes(refundLines(order, amount), rates, typed, order.billing?.country || order.shipping?.country);
+      invoice = await createDocument(typed, {
+        contactId,
+        reference: type === 'sales_invoice' ? `${label} of order ${order.number}` : `${order.number}-R${refund.number || refundId.slice(-6)}`,
+        date: day(refund.date_created),
+        currency: order.currency,
+        inclTax: Boolean(order.item_tax_included),
+        details,
+        sourceUrl: options.adminUrl ? `${options.adminUrl}/orders/${order.id}` : undefined,
+      });
+      // saved first, so a retry finishes this credit invoice instead of creating a second one
+      await saveValues(swell, path, { moneybird_refunds: { [refundId]: String(invoice.id) } }, appId);
+    }
+    const creditId = String(invoice.id ?? existingId);
 
     if (type === 'sales_invoice' && invoice.state === 'draft' && settings.finalize !== 'draft') {
       step.name = 'mark the credit invoice as sent';
@@ -515,8 +524,11 @@ export async function syncRefund(
     if (settings.register_payments && invoice.state !== 'draft') {
       step.name = 'register the refund payment';
       const unpaid = unpaidOf(invoice);
-      const due = unpaid.price < 0 ? unpaid : { price: -amount, base: undefined };
-      await registerPayment(typed, creditId, due, day(refund.date_created), `Swell ${label.toLowerCase()} of order ${order.number}`);
+      // nothing left to pay back: the payment was registered by an earlier run
+      const due = Number.isNaN(unpaid.price) ? { price: -amount, base: undefined } : unpaid.price < 0 ? unpaid : null;
+      if (due) {
+        await registerPayment(typed, creditId, due, day(refund.date_created), `Swell ${label.toLowerCase()} of order ${order.number}`);
+      }
     }
 
     const number = type === 'sales_invoice' ? invoice.invoice_id || 'draft' : invoice.reference;
@@ -527,6 +539,7 @@ export async function syncRefund(
       {
         moneybird_refund_total: money(Number(saved.moneybird_refund_total || 0) + amount),
         moneybird_credit_invoices: [saved.moneybird_credit_invoices, line].filter(Boolean).join('\n'),
+        moneybird_refunds_done: { [refundId]: true },
         moneybird_error: null,
       },
       appId,
@@ -535,7 +548,8 @@ export async function syncRefund(
   } catch (err) {
     const message = `${label}: couldn't ${step.name}: ${connectionError(err)}`;
     await saveValues(swell, path, { moneybird_error: message }, appId);
-    // a credit invoice made by a failed call can't be found again, so only a refused call is retried
+    // a credit invoice made by a failed call can't be found again, so only a refused call is retried;
+    // later steps are retried, and the next run finishes the saved credit invoice
     return { status: 'failed', reason: message, error: err, retry: step.name !== 'create the credit invoice' || notProcessed(err) };
   }
 }

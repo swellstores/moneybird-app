@@ -29,7 +29,11 @@
     },
     "moneybird_refunds": {
       "type": "object",
-      "description": "Moneybird credit invoice IDs by Swell refund ID, so each refund is sent once"
+      "description": "Moneybird credit invoice IDs by Swell refund ID, saved as soon as each is created"
+    },
+    "moneybird_refunds_done": {
+      "type": "object",
+      "description": "Swell refund IDs whose credit invoice is finished (numbered and paid), so each refund is sent once"
     },
     "moneybird_refund_total": {
       "type": "float",

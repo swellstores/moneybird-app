@@ -116,6 +116,12 @@ describe("contacts", () => {
     });
   });
 
+  it("keeps the customer's billing address when the order's billing fields are empty", () => {
+    const account = { id: "a", email: "x@y.z", first_name: "Jo", billing: { address1: "Dam 1", city: "Amsterdam", country: "NL" } };
+    const order = { billing: { method: "account", address1: null, city: null, country: null } };
+    expect(contactFields(account, order)).toMatchObject({ address1: "Dam 1", city: "Amsterdam", country: "NL" });
+  });
+
   it("uses the company, and the email when there's no name", () => {
     expect(contactFields({ id: "a", email: "x@y.z" }, { billing: { company: "Acme BV" } })).toMatchObject({ company_name: "Acme BV" });
     expect(contactFields({ id: "a", email: "x@y.z" })).toMatchObject({ company_name: "x@y.z" });
@@ -330,6 +336,7 @@ describe("syncRefund", () => {
     expect(bodyOf(fetchMock, `POST /sales_invoices/${CREDIT_ID}/payments`).payment).toMatchObject({ price: "-10.00", price_base: "-9.20", payment_date: "2026-10-16" });
     expect(savedOn(swell, orderPath)).toEqual({
       moneybird_refunds: { [REFUND_ID]: CREDIT_ID },
+      moneybird_refunds_done: { [REFUND_ID]: true },
       moneybird_refund_total: 10,
       moneybird_credit_invoices: "earlier\nRefund 100015: credit invoice 2026-0043 (−10.00 EUR)",
       moneybird_error: null,
@@ -346,6 +353,31 @@ describe("syncRefund", () => {
     expect(bodyOf(fetchMock, "POST /sales_invoices").sales_invoice.details_attributes[0].price).toBe("-4.45");
   });
 
+  it("finishes a credit invoice an earlier run made but didn't number or pay", async () => {
+    const fetchMock = mockMoneybird({
+      [`GET /sales_invoices/${CREDIT_ID}`]: ok(credit({ state: "draft" })),
+      [`PATCH /sales_invoices/${CREDIT_ID}/send_invoice`]: ok(credit({ state: "open", invoice_id: "2026-0043", total_unpaid: "-10.0" })),
+      [`POST /sales_invoices/${CREDIT_ID}/payments`]: ok({ id: "pay_2" }, 201),
+    });
+    const swell = makeSwell();
+    const result = await syncRefund(swell as any, makeSettings(), sent({ moneybird_refunds: { [REFUND_ID]: CREDIT_ID } }), refund);
+    expect(result).toEqual({ status: "sent", invoice_id: CREDIT_ID, done: ["refund"] });
+    expect(callKeys(fetchMock)).toEqual([
+      `GET /sales_invoices/${CREDIT_ID}`,
+      `PATCH /sales_invoices/${CREDIT_ID}/send_invoice`,
+      `POST /sales_invoices/${CREDIT_ID}/payments`,
+    ]);
+    expect(savedOn(swell, orderPath).moneybird_refunds_done).toEqual({ [REFUND_ID]: true });
+  });
+
+  it("doesn't pay back twice when an earlier run registered the payment", async () => {
+    const fetchMock = mockMoneybird({
+      [`GET /sales_invoices/${CREDIT_ID}`]: ok(credit({ state: "paid", invoice_id: "2026-0043", total_unpaid: "0.0" })),
+    });
+    await syncRefund(makeSwell() as any, makeSettings(), sent({ moneybird_refunds: { [REFUND_ID]: CREDIT_ID } }), refund);
+    expect(callKeys(fetchMock)).toEqual([`GET /sales_invoices/${CREDIT_ID}`]);
+  });
+
   it("books a negative external invoice for external orders", async () => {
     const fetchMock = mockMoneybird({
       "POST /external_sales_invoices": ok({ id: CREDIT_ID, state: "open", reference: "100546-R100015", total_price_incl_tax: "-10.0" }, 201),
@@ -360,7 +392,7 @@ describe("syncRefund", () => {
   it("skips orders not in Moneybird, refunds already sent and empty refunds", async () => {
     const fetchMock = mockMoneybird();
     expect(await syncRefund(makeSwell() as any, makeSettings(), makeOrder(), refund)).toEqual({ status: "skipped", reason: "the order isn't in Moneybird" });
-    expect(await syncRefund(makeSwell() as any, makeSettings(), sent({ moneybird_refunds: { [REFUND_ID]: CREDIT_ID } }), refund)).toEqual({
+    expect(await syncRefund(makeSwell() as any, makeSettings(), sent({ moneybird_refunds: { [REFUND_ID]: CREDIT_ID }, moneybird_refunds_done: { [REFUND_ID]: true } }), refund)).toEqual({
       status: "unchanged",
       reason: "refund already in Moneybird",
     });
