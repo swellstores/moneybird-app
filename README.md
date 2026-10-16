@@ -114,6 +114,7 @@ orders** reports problems by failing its run.
 | Moneybird response               | Handling                                                                                  |
 | -------------------------------- | ----------------------------------------------------------------------------------------- |
 | 401                              | "Moneybird rejected the API token …"                                                     |
+| 404 naming the administration    | "Moneybird didn't find the administration … Check the Administration ID."                |
 | 403                              | "The API token isn't allowed to do this …" (needs sales invoices and settings)          |
 | 402                              | "Your Moneybird plan doesn't allow this …" (e.g. the free plan's invoice limit)         |
 | 422                              | "Moneybird refused it: …" with Moneybird's field errors                                  |

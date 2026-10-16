@@ -113,6 +113,9 @@ describe("errors", () => {
     expect(connectionError(new MoneybirdError(402, "limited"))).toMatch(/^Your Moneybird plan doesn't allow this/);
     expect(connectionError(new MoneybirdError(422, "reference is taken", "POST /sales_invoices"))).toBe("Moneybird refused it: reference is taken");
     expect(connectionError(new MoneybirdError(429, "Retry later"))).toBe("Moneybird is not available right now (Moneybird 429: Retry later), try again later.");
+    expect(connectionError(new MoneybirdError(404, "Administration not found", "GET /tax_rates"))).toBe(
+      "Moneybird didn't find the administration (Moneybird 404: Administration not found). Check the Administration ID.",
+    );
     expect(connectionError(new MoneybirdError(404, "not found", "GET /sales_invoices/1"))).toBe(
       "Moneybird request failed: Moneybird 404: not found (GET /sales_invoices/1)",
     );

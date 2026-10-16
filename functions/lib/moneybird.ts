@@ -189,7 +189,7 @@ export function connectionError(err: unknown): string {
     if (err.status === 402) {
       return `Your Moneybird plan doesn't allow this (${err.message}). Check your subscription in Moneybird.`;
     }
-    if (err.status === 404 && err.endpoint === 'GET /administrations') {
+    if (err.status === 404 && /administration/i.test(err.message)) {
       return `Moneybird didn't find the administration (${err.message}). Check the Administration ID.`;
     }
     if (err.status === 422) {
