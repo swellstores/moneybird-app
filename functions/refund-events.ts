@@ -1,4 +1,4 @@
-import { APP_ID, loadSettings } from './lib/moneybird';
+import { APP_ID, adminUrlOf, loadSettings, swellEnv } from './lib/moneybird';
 import { ORDER_EXPAND, logResult, retryIfTemporary, syncRefund } from './lib/invoices';
 
 export const config: SwellConfig = {
@@ -31,7 +31,8 @@ export default async function (req: SwellRequest) {
   if (!order?.id) {
     return;
   }
-  const result = await syncRefund(swell, settings, order, refund, { appId: req.appId || APP_ID, adminUrl: req.store?.admin_url });
+  const env = swellEnv(req);
+  const result = await syncRefund(swell, settings, order, refund, { appId: req.appId || APP_ID, adminUrl: adminUrlOf(req.store, env), env });
   logResult(`refund ${refund.number ?? data.id} of order ${order.number}`, result);
   retryIfTemporary(result);
 }

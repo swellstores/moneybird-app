@@ -1,11 +1,18 @@
-import { APP_ID, MoneybirdError, connectionError, getSettings, missingSettings, salesTaxRates, stopReason, type SwellClient } from './lib/moneybird';
+import {
+  APP_ID, MoneybirdError, adminUrlOf, connectionError, getSettings, missingSettings, salesTaxRates, stopReason, type SwellClient,
+} from './lib/moneybird';
 import { ORDER_EXPAND, syncOrder } from './lib/invoices';
 
+// started by the start-import action, which passes the environment (workflows get no Swell-Env header) and the period
 export const config = {
   kind: 'workflow',
   description: 'Send paid orders of the last days to Moneybird',
-  action: true,
 };
+
+// "test" when start-import ran in the test environment; only trusted from a run a function started
+export function runEnv(req: SwellWorkflowRequest): 'test' | null {
+  return req.workflow?.trigger === 'function' && (req.data as any)?.env === 'test' ? 'test' : null;
+}
 
 // small pages: each order takes several calls and Moneybird allows 150 calls in 5 minutes
 export const PAGE_SIZE = 10;
@@ -90,6 +97,9 @@ export default class ImportOrders {
     }
 
     const appId = req.appId || APP_ID;
+    // workflows get only the store id, so the dashboard address for order links is built from it
+    const env = runEnv(req);
+    const adminUrl = adminUrlOf(req.store, env);
     let totals = emptyStats();
     let lastId: string | null = null;
 
@@ -111,7 +121,7 @@ export default class ImportOrders {
             // turning the app off stops the run before the next order, not only before the next page
             const reason = await stopReason(req.swell);
             if (reason) return { ...stats, count: 0, last_id: null, stopped: reason };
-            const result = await syncOrder(req.swell, settings, order, { appId, taxRates });
+            const result = await syncOrder(req.swell, settings, order, { appId, adminUrl, env, taxRates });
             if (result.status === 'failed') {
               // a temporary error throws so step.do runs the page again later
               if (result.retry && result.error instanceof MoneybirdError && result.error.retryable) throw result.error;

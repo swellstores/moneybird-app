@@ -1,20 +1,19 @@
-import { connectionError, getSettings, listAdministrations, moneybirdRequest, salesTaxRates } from './lib/moneybird';
+import { connectionError, fail, getSettings, listAdministrations, moneybirdRequest, runAction, salesTaxRates } from './lib/moneybird';
 
 export const config: SwellConfig = {
   description: 'Check the Moneybird API token and administration',
   action: true,
 };
 
-// a thrown 400 shows in the admin as a red error popup, a returned message as a regular one
-function fail(message: string): never {
-  throw new SwellError(message, { status: 400 });
-}
-
 const SHOWN = 6;
 const list = (items: string[]) => `${items.slice(0, SHOWN).join('; ')}${items.length > SHOWN ? `; and ${items.length - SHOWN} more` : ''}`;
 
 // Works while the app is turned off, so the settings can be checked before turning it on. Only reads from Moneybird.
-export default async function (req: SwellRequest) {
+export default function (req: SwellRequest) {
+  return runAction('Test connection', () => test(req));
+}
+
+async function test(req: SwellRequest) {
   const settings = getSettings(await req.swell.settings());
   if (!settings.api_token) {
     fail('Add the API token and save the settings first.');

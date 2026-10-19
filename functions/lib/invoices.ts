@@ -8,6 +8,7 @@ import {
   matchTaxRate,
   moneybirdRequest,
   money,
+  orderUrl,
   salesTaxRates,
   webUrl,
   type MoneybirdSettings,
@@ -22,11 +23,13 @@ export const SOURCE = 'Swell';
 
 export interface SyncOptions {
   appId?: string;
-  // Swell admin URL, for the link back to the order on external sales invoices
+  // Swell dashboard address (with /admin or /admin/test), for the link back to the order on external sales invoices
   adminUrl?: string;
+  // "test" in the test environment: its invoices get their own reference, so a live invoice is never taken for one
+  env?: 'test' | null;
   // tax rates loaded once for a batch of orders
   taxRates?: TaxRate[];
-  // date of the payment; the order date when not given (most orders are paid at checkout)
+  // date of the payment; when not given, the date of the order's last successful Swell payment
   paymentDate?: string;
 }
 
@@ -255,8 +258,22 @@ export function detailsAttributes(lines: Line[], rates: TaxRate[], settings: Mon
 
 const invoiceKind = (type: string) => (type === 'external_sales_invoice' ? 'external_sales_invoices' : 'sales_invoices');
 
-export function orderReference(order: any) {
-  return `Order ${order.number}`;
+// the sales invoice's reference, which also finds an invoice an earlier run made but didn't save; test and live
+// orders can share numbers (and an administration), so test invoices get their own
+export function orderReference(order: any, env?: 'test' | null) {
+  return `${env === 'test' ? 'Test order' : 'Order'} ${order.number}`;
+}
+
+// the day of the order's last successful Swell payment, the same on every retry; the order date when it has none
+export async function paymentDay(swell: Pick<SwellClient, 'get'>, order: any): Promise<string> {
+  const found = await swell.get('/payments', {
+    where: { order_id: order.id, success: true },
+    sort: 'date_created desc',
+    limit: 1,
+    fields: 'date_created',
+  });
+  const paidAt = found?.results?.[0]?.date_created;
+  return day(paidAt || order.date_created);
 }
 
 interface DocumentInput {
@@ -377,7 +394,7 @@ export async function syncOrder(swell: SwellClient, settings: MoneybirdSettings,
   try {
     if (!invoiceId && type === 'sales_invoice') {
       // an invoice made by an earlier run whose result wasn't saved
-      const found = await findByReference(typed, orderReference(order));
+      const found = await findByReference(typed, orderReference(order, options.env));
       if (found?.id) {
         invoiceId = String(found.id);
         state = found.state;
@@ -392,12 +409,12 @@ export async function syncOrder(swell: SwellClient, settings: MoneybirdSettings,
       const { details, unmatched } = detailsAttributes(orderLines(order), rates, typed, order.billing?.country || order.shipping?.country);
       const invoice = await createDocument(typed, {
         contactId,
-        reference: type === 'sales_invoice' ? orderReference(order) : String(order.number),
+        reference: type === 'sales_invoice' ? orderReference(order, options.env) : String(order.number),
         date: day(order.date_created),
         currency: order.currency,
         inclTax: Boolean(order.item_tax_included),
         details,
-        sourceUrl: options.adminUrl ? `${options.adminUrl}/orders/${order.id}` : undefined,
+        sourceUrl: orderUrl(options.adminUrl, order.id),
       });
       invoiceId = String(invoice.id);
       state = invoice.state;
@@ -426,7 +443,8 @@ export async function syncOrder(swell: SwellClient, settings: MoneybirdSettings,
       const invoice = await moneybirdRequest(typed, 'GET', `/${invoiceKind(type)}/${invoiceId}`);
       const unpaid = unpaidOf(invoice);
       if (unpaid.price > 0) {
-        await registerPayment(typed, invoiceId, unpaid, options.paymentDate || day(order.date_created), `Swell order ${order.number}`);
+        const paidOn = options.paymentDate || (await paymentDay(swell, order));
+        await registerPayment(typed, invoiceId, unpaid, paidOn, `Swell order ${order.number}`);
         done.push('payment registered');
       }
       await saveValues(swell, path, { moneybird_paid_at: new Date().toISOString(), moneybird_state: 'paid', moneybird_status: stateLabel('paid'), moneybird_error: null }, appId);
@@ -532,7 +550,7 @@ export async function syncRefund(
         currency: order.currency,
         inclTax: Boolean(order.item_tax_included),
         details,
-        sourceUrl: options.adminUrl ? `${options.adminUrl}/orders/${order.id}` : undefined,
+        sourceUrl: orderUrl(options.adminUrl, order.id),
       });
       // saved first, so a retry finishes this credit invoice instead of creating a second one
       await saveValues(swell, path, { moneybird_refunds: { [refundId]: String(invoice.id) } }, appId);

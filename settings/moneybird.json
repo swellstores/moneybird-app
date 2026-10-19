@@ -13,7 +13,7 @@
     {
       "id": "import_orders",
       "label": "Send existing orders",
-      "function": "import-orders",
+      "function": "start-import",
       "loading_label": "Starting…",
       "hint": "Sends paid orders that aren't in Moneybird yet",
       "modal": {

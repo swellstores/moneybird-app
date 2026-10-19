@@ -28,18 +28,21 @@ When an order is paid (`order.paid`), and it isn't a draft and its total is abov
    checks that the email's domain can receive mail; when it refuses the email, the contact is created without it
    (delivery `Manual`) and the order's note says so. The contact's ID and link are saved on the customer.
 2. **Invoice** – with **Book orders as**:
-   - *Sales invoices* (default): `POST /sales_invoices` with reference `Order <number>`, the order date, currency,
-     the optional workflow and document style. Before creating, the app looks for an invoice with that reference
-     (`find_by_reference`), so an invoice created by a run whose result wasn't saved is reused.
+   - *Sales invoices* (default): `POST /sales_invoices` with reference `Order <number>` (`Test order <number>` in
+     the test environment), the order date, currency, the optional workflow and document style. Before creating, the
+     app looks for an invoice with that reference (`find_by_reference`), so an invoice created by a run whose result
+     wasn't saved is reused. Test orders have their own reference, so a test order never takes over the invoice of a
+     live order with the same number when both environments use one administration.
    - *External sales invoices*: `POST /external_sales_invoices` with the order number as reference, source `Swell`
-     and a link back to the order (`source_url`, when Swell gives the admin URL).
+     and a link back to the order in the Swell dashboard (`source_url`, `…/admin/orders/<id>`, or
+     `…/admin/test/orders/<id>` in the test environment).
 3. **Number** – a new sales invoice is a draft without a number. With **New sales invoices** set to *Mark as sent*
    (default) the app sends it with `delivery_method: Manual` (no email); with *Email to the customer* Moneybird
    emails it; with *Leave as draft* it stays a draft and the payment isn't registered.
 4. **Payment** – with **Register payments** on, `POST /…/<id>/payments` for the invoice's unpaid total, with the same
    amount in the administration's currency (`price_base`, from `total_unpaid_base`; Moneybird requires it for
-   invoices in another currency), dated when
-   `order.paid` fired (the order date for orders sent later), with `transaction_identifier: Swell order <number>`, the
+   invoices in another currency), dated on the order's last successful Swell payment (the order date when it has
+   none), so a retry keeps the same date, with `transaction_identifier: Swell order <number>`, the
    optional **Financial account ID**, and `manual_payment_action: payment_without_proof` when **Payments without proof**
    is on.
 
@@ -106,18 +109,24 @@ would fill it with people who never bought anything.
   orders that aren't in Moneybird yet and finishes the ones that stopped halfway. Selecting more shows "Select up to
   10 orders." and sends nothing.
 
-  **Why 10:** the action runs while the admin waits for its answer, in a single function call with a time limit, and
-  Moneybird allows 150 requests per 5 minutes. Each order takes up to 8 requests, so 10 orders (about 80 requests)
-  finish in one call and leave room for the event functions sending new orders at the same time. More orders would
-  risk hitting Moneybird's limit or the time limit halfway. For more orders, use **Send existing orders**: it runs in
-  the background and waits and retries when Moneybird's limit is reached.
-- **Send existing orders** in the app's Actions menu: a background workflow that sends paid orders placed in the last
-  7, 30 or 90 days, 10 per page, one order at a time. Refunds made before aren't sent.
+  **Why 10, and the time limit:** the action runs while the admin waits for its answer, in one function call of at
+  most 10 seconds, and Moneybird allows 150 requests per 5 minutes. Each order takes up to 8 requests (10 orders,
+  about 80), which leaves room for the event functions sending new orders at the same time. An order takes a few
+  seconds, so the action starts no new order after 6 seconds; the message then ends with "Stopped before <n> more:
+  the time limit for one run was reached; run it again to send the rest". Running it again skips the orders already
+  sent. For many orders, use **Send existing orders**: it runs in the background and waits and retries when
+  Moneybird's limit is reached.
+- **Send existing orders** in the app's Actions menu: `functions/start-import.ts` checks the settings and starts the
+  `functions/import-orders.ts` workflow with the environment and period (`workflows.create('import-orders', { env,
+  days })`), and answers "Import started. Follow it in the Workflows tab of the app." The workflow sends paid orders
+  placed in the last 7, 30 or 90 days, 10 per page, one order at a time. Refunds made before aren't sent.
 - **Test connection** (below).
 
-Every problem in **Send to Moneybird** and **Test connection** is a red error popup (a `SwellError` with status
-400); results are a regular message, and one that lists failed orders next to sent ones stays regular. **Send existing
-orders** reports problems by failing its run.
+Every problem in **Send to Moneybird**, **Send existing orders** (starting it) and **Test connection** is a red error
+popup (a `SwellError` with status 400), including unexpected ones such as a failed Swell read ("<action> failed:
+<reason>"). A **Send to Moneybird** run where any order failed is an error too, and its message also lists the orders
+that were sent. Results without failures are a regular message. A running **Send existing orders** import reports
+problems by failing its run.
 
 ### Errors and retries
 
@@ -205,8 +214,12 @@ add the …").
 
 - **Only paid orders** – orders are sent when they're paid; unpaid, draft and free orders aren't.
 - **Canceled orders** – canceling an order doesn't change its invoice. Refund it in Swell to book a credit invoice.
-- **Tax rates** – a line's rate is matched by percentage. Create the missing rates in Moneybird, or set a default
-  tax rate; the order's note lists the percentages without a match.
+- **Tax rates** – a line's rate is matched by percentage among the administration's active sales tax rates (all
+  pages). Create the missing rates in Moneybird, or set a default tax rate; the order's note lists the percentages
+  without a match.
+- **Test and live environments** – each environment sends its own orders. Order links in Moneybird open the order in
+  the environment it came from, and test sales invoices are referenced `Test order <number>`. Test and live can use
+  one administration or separate ones.
 - **Totals** – Moneybird calculates tax per line, so with prices that exclude tax its total can differ from Swell's by
   a cent; the order's note says so, and the payment registered is Moneybird's unpaid total.
 - **Contacts** are matched by Swell customer ID. A contact created in Moneybird by hand isn't linked unless its
@@ -223,6 +236,7 @@ functions/
   refund-events.ts     # payment.refund.succeeded → credit invoice
   account-events.ts    # account.updated → contact update
   send-to-moneybird.ts # order and bulk action
+  start-import.ts      # settings action: starts the import with the environment and period
   import-orders.ts     # workflow: paid orders of the last 7/30/90 days
   test-connection.ts   # settings action
   lib/

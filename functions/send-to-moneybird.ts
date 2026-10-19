@@ -1,4 +1,6 @@
-import { APP_ID, MoneybirdError, getSettings, missingSettings, salesTaxRates, connectionError, stopReason } from './lib/moneybird';
+import {
+  APP_ID, MoneybirdError, adminUrlOf, connectionError, fail, getSettings, missingSettings, runAction, salesTaxRates, stopReason, swellEnv,
+} from './lib/moneybird';
 import { ORDER_EXPAND, logResult, syncOrder } from './lib/invoices';
 
 export const config: SwellConfig = {
@@ -8,16 +10,20 @@ export const config: SwellConfig = {
 
 // most orders one run sends; each takes several Moneybird calls and Moneybird allows 150 calls in 5 minutes
 export const MAX_SELECTION = 10;
+// a function has 10 seconds (the most it can have), so no new order is started after this; an order takes a few
+// seconds, and the ones not reached are sent by running the action again
+export const BUDGET_MS = 6_000;
+export const TIME_LIMIT_REASON = 'the time limit for one run was reached; run it again to send the rest';
 const RECORD_ID = /^[0-9a-f]{24}$/i;
-
-// a thrown 400 shows in the admin as a red error popup, a returned message as a regular one
-function fail(message: string): never {
-  throw new SwellError(message, { status: 400 });
-}
 
 // Order action and bulk action: create the invoice of orders that aren't in Moneybird yet, or finish
 // the ones that stopped halfway (not numbered, payment not registered)
-export default async function (req: SwellRequest) {
+export default function (req: SwellRequest) {
+  return runAction('Send to Moneybird', () => send(req));
+}
+
+async function send(req: SwellRequest) {
+  const started = Date.now();
   const action = req.data.$action;
   if (action?.collection !== 'orders') {
     fail('Run this action from orders.');
@@ -60,12 +66,17 @@ export default async function (req: SwellRequest) {
     fail(connectionError(err));
   }
 
-  const options = { appId: req.appId || APP_ID, adminUrl: req.store?.admin_url, taxRates };
+  const env = swellEnv(req);
+  const options = { appId: req.appId || APP_ID, adminUrl: adminUrlOf(req.store, env), env, taxRates };
   const sent: string[] = [];
   const skipped: string[] = [];
   const failed: string[] = [];
   let stoppedBecause: string | undefined;
   for (const order of orders) {
+    if (Date.now() - started > BUDGET_MS) {
+      stoppedBecause = TIME_LIMIT_REASON;
+      break;
+    }
     // the app was turned off while the action ran: send nothing more
     stoppedBecause = await stopReason(req.swell);
     if (stoppedBecause) {
@@ -89,7 +100,8 @@ export default async function (req: SwellRequest) {
   }
 
   const message = summary(sent, skipped, failed, orders.length, stoppedBecause);
-  if (!sent.length) {
+  // any failed order makes it an error, also next to orders that were sent (the message lists both)
+  if (!sent.length || failed.length) {
     fail(message);
   }
   return { message };

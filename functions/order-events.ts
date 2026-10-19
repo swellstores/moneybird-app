@@ -1,4 +1,4 @@
-import { APP_ID, day, loadSettings } from './lib/moneybird';
+import { APP_ID, adminUrlOf, loadSettings, swellEnv } from './lib/moneybird';
 import { ORDER_EXPAND, logResult, retryIfTemporary, syncOrder } from './lib/invoices';
 
 export const config: SwellConfig = {
@@ -20,11 +20,11 @@ export default async function (req: SwellRequest) {
   }
 
   const order = await swell.get(`/orders/${data.id}`, { expand: ORDER_EXPAND });
+  const env = swellEnv(req);
   const result = await syncOrder(swell, settings, order, {
     appId: req.appId || APP_ID,
-    adminUrl: req.store?.admin_url,
-    // order.paid fires when the payment is made
-    paymentDate: day(),
+    adminUrl: adminUrlOf(req.store, env),
+    env,
   });
   logResult(`order ${order?.number ?? data.id}`, result);
   retryIfTemporary(result);

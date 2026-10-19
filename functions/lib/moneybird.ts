@@ -203,6 +203,25 @@ export function connectionError(err: unknown): string {
   return `Moneybird request failed: ${err instanceof Error ? err.message : String(err)}`;
 }
 
+// --- actions ---
+
+// a thrown 400 shows in the admin as a red error popup, a returned message as a regular one
+export function fail(message: string): never {
+  throw new SwellError(message, { status: 400 });
+}
+
+// runs an action so every error reaches the admin as a red popup with a message, including unexpected ones
+// (a Swell read that failed, a bug) that would otherwise surface as a raw error
+export async function runAction<T>(name: string, run: () => Promise<T>): Promise<T> {
+  try {
+    return await run();
+  } catch (err) {
+    if (err instanceof SwellError) throw err;
+    console.error(`Moneybird: ${name} failed - ${err instanceof MoneybirdError ? err.detail : err instanceof Error ? err.stack || err.message : err}`);
+    fail(err instanceof MoneybirdError ? connectionError(err) : `${name} failed: ${err instanceof Error ? err.message : String(err)}`);
+  }
+}
+
 // --- administrations, tax rates ---
 
 export async function listAdministrations(settings: Pick<MoneybirdSettings, 'api_token' | 'administration_id'>): Promise<any[]> {
@@ -217,12 +236,23 @@ export interface TaxRate {
   country: string | null;
 }
 
-// active tax rates for sales invoices
+// Moneybird returns at most 100 tax rates per page
+export const TAX_RATES_PAGE_SIZE = 100;
+// a stop for the page loop; no administration has anywhere near this many sales tax rates
+const MAX_TAX_RATE_PAGES = 10;
+
+// active tax rates for sales invoices, from every page
 export async function salesTaxRates(settings: MoneybirdSettings): Promise<TaxRate[]> {
-  const list = await moneybirdRequest(settings, 'GET', '/tax_rates', undefined, {
-    query: { filter: 'tax_rate_type:sales_invoice', per_page: '100' },
-  });
-  return (Array.isArray(list) ? list : [])
+  const all: any[] = [];
+  for (let page = 1; page <= MAX_TAX_RATE_PAGES; page++) {
+    const list = await moneybirdRequest(settings, 'GET', '/tax_rates', undefined, {
+      query: { filter: 'tax_rate_type:sales_invoice,active:true', per_page: String(TAX_RATES_PAGE_SIZE), page: String(page) },
+    });
+    const rates = Array.isArray(list) ? list : [];
+    all.push(...rates);
+    if (rates.length < TAX_RATES_PAGE_SIZE) break;
+  }
+  return all
     .filter((rate: any) => rate && rate.active !== false)
     .map((rate: any) => ({
       id: String(rate.id),
@@ -248,6 +278,27 @@ export const money = (value: unknown) => Math.round((Number(value) || 0) * 100) 
 export function day(value?: unknown): string {
   const time = typeof value === 'string' || typeof value === 'number' ? new Date(value).getTime() : NaN;
   return new Date(Number.isFinite(time) ? time : Date.now()).toISOString().slice(0, 10);
+}
+
+// "test" when a function runs in the test environment (its Swell-Env header is exactly "test"), otherwise null
+export function swellEnv(req: { headers?: Headers }): 'test' | null {
+  return req.headers?.get('swell-env') === 'test' ? 'test' : null;
+}
+
+// the store's dashboard address. Functions get the store's address as admin_url (without /admin) and workflows only
+// the store id, so it's built from either; test records are under /admin/test
+export function adminUrlOf(store?: { id?: string; admin_url?: string } | null, env?: string | null): string {
+  let url = (store?.admin_url || (store?.id ? `https://${store.id}.swell.store` : '')).replace(/\/+$/, '');
+  if (!url) return '';
+  if (env && url.includes(`/admin/${env}`)) url = url.replace(`/admin/${env}`, '/admin');
+  if (!url.includes('/admin')) url = `${url}/admin`;
+  if (env) url = url.replace('/admin', `/admin/${env}`);
+  return url;
+}
+
+// the order's page in the Swell dashboard, or undefined without a dashboard address
+export function orderUrl(adminUrl: string | undefined, orderId: string): string | undefined {
+  return adminUrl ? `${adminUrl.replace(/\/+$/, '')}/orders/${orderId}` : undefined;
 }
 
 export function webUrl(settings: Pick<MoneybirdSettings, 'administration_id'>, kind: 'sales_invoices' | 'external_sales_invoices' | 'contacts', id: string) {

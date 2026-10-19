@@ -5,6 +5,7 @@ import {
   ADMIN,
   ADMIN_URL,
   CONTACT_ID,
+  STORE_URL,
   INVOICE_ID,
   ORDER_ID,
   REFUND_ID,
@@ -23,7 +24,9 @@ import refundEvents, { config as refundConfig } from "../../functions/refund-eve
 import accountEvents, { config as accountConfig, isContactChange } from "../../functions/account-events";
 import testConnection, { config as testConfig } from "../../functions/test-connection";
 import sendToMoneybird, { MAX_SELECTION, config as sendConfig } from "../../functions/send-to-moneybird";
-import ImportOrders, { PAGE_SIZE, config as importConfig, parseDays } from "../../functions/import-orders";
+import ImportOrders, { PAGE_SIZE, config as importConfig, parseDays, runEnv } from "../../functions/import-orders";
+import startImport, { config as startConfig } from "../../functions/start-import";
+import { TIME_LIMIT_REASON } from "../../functions/send-to-moneybird";
 
 let logSpy: ReturnType<typeof vi.spyOn>;
 
@@ -36,9 +39,9 @@ afterEach(() => {
   vi.restoreAllMocks();
 });
 
-function request(data: Record<string, any>, records: Record<string, any> = {}, settings: any = rawSettings) {
+function request(data: Record<string, any>, records: Record<string, any> = {}, settings: any = rawSettings, headers: Record<string, string> = {}) {
   const swell = makeSwell(records, settings);
-  const req = createMockRequest({ data, swell: swell as any, store: { admin_url: ADMIN_URL } as any, appId: "moneybird" });
+  const req = createMockRequest({ data, swell: swell as any, store: { id: "shop", admin_url: STORE_URL } as any, appId: "moneybird", headers });
   return { req, swell };
 }
 
@@ -64,8 +67,9 @@ describe("order-events", () => {
     await orderEvents(req);
     expect(swell.get).toHaveBeenCalledWith(orderPath, { expand: ["account", "items.product", "items.variant"] });
     expect(callKeys(fetchMock)).toContain("POST /sales_invoices");
-    // the payment is dated when order.paid fires
-    expect(bodyOf(fetchMock, `POST /sales_invoices/${INVOICE_ID}/payments`).payment.payment_date).toBe(new Date().toISOString().slice(0, 10));
+    // no Swell payment: dated on the order (the order fixture's date)
+    expect(bodyOf(fetchMock, `POST /sales_invoices/${INVOICE_ID}/payments`).payment.payment_date).toBe("2026-10-15");
+    expect(bodyOf(fetchMock, "POST /sales_invoices").sales_invoice.reference).toBe("Order 100546");
     expect(logSpy).toHaveBeenCalledWith(`Moneybird: order 100546 - created, marked as sent, payment registered (${INVOICE_ID})`);
   });
 
@@ -308,8 +312,9 @@ describe("import-orders", () => {
     return { swell, result: new ImportOrders().run(req as any, step) };
   };
 
-  it("is a workflow action with a period", () => {
-    expect(importConfig).toMatchObject({ kind: "workflow", action: true });
+  it("is a workflow started by the start-import action, with a period", () => {
+    expect(importConfig).toMatchObject({ kind: "workflow" });
+    expect(importConfig).not.toHaveProperty("action");
     expect(parseDays("90")).toBe(90);
     expect(parseDays("5")).toBe(30);
   });
@@ -354,5 +359,125 @@ describe("import-orders", () => {
     vi.restoreAllMocks();
     mockMoneybird({ "GET /tax_rates": fail(401, "invalid token") });
     await expect(run({ pages: [[makeOrder()]] }).result).rejects.toThrow(/^Import failed on page 1\. Moneybird rejected the API token/);
+  });
+});
+
+describe("environments", () => {
+  const external = { ...rawSettings, invoice_type: "external_sales_invoice" };
+  const testEnv = { "Swell-Env": "test" };
+
+  it("links invoices to the order in the live dashboard", async () => {
+    const fetchMock = mockMoneybird();
+    const { req } = request({ id: ORDER_ID }, {}, external);
+    await orderEvents(req);
+    expect(bodyOf(fetchMock, "POST /external_sales_invoices").external_sales_invoice.source_url).toBe(`${ADMIN_URL}/orders/${ORDER_ID}`);
+  });
+
+  it("links test orders to the test dashboard and gives their sales invoices their own reference", async () => {
+    let fetchMock = mockMoneybird();
+    await orderEvents(request({ id: ORDER_ID }, {}, external, testEnv).req);
+    expect(bodyOf(fetchMock, "POST /external_sales_invoices").external_sales_invoice.source_url).toBe(`${STORE_URL}/admin/test/orders/${ORDER_ID}`);
+
+    vi.restoreAllMocks();
+    // a live invoice with "Order 100546" exists, but a test order looks for its own reference only
+    fetchMock = mockMoneybird({ "GET /sales_invoices/find_by_reference/Test%20order%20100546": fail(404, "record not found") });
+    await orderEvents(request({ id: ORDER_ID }, {}, rawSettings, testEnv).req);
+    const keys = callKeys(fetchMock);
+    expect(keys).toContain("GET /sales_invoices/find_by_reference/Test%20order%20100546");
+    expect(keys).not.toContain("GET /sales_invoices/find_by_reference/Order%20100546");
+    expect(bodyOf(fetchMock, "POST /sales_invoices").sales_invoice.reference).toBe("Test order 100546");
+  });
+
+  it("dates the payment on the order's last successful Swell payment, the same on every retry", async () => {
+    const fetchMock = mockMoneybird();
+    const { req, swell } = request({ id: ORDER_ID }, { payments: [{ date_created: "2026-10-17T22:30:00.000Z" }] });
+    await orderEvents(req);
+    expect(bodyOf(fetchMock, `POST /sales_invoices/${INVOICE_ID}/payments`).payment.payment_date).toBe("2026-10-17");
+    expect(swell.get).toHaveBeenCalledWith("/payments", {
+      where: { order_id: ORDER_ID, success: true }, sort: "date_created desc", limit: 1, fields: "date_created",
+    });
+  });
+
+  it("start-import starts the import with the environment and period", async () => {
+    expect(startConfig).toMatchObject({ action: true });
+    const live = request({ days: "90" });
+    expect(await startImport(live.req)).toEqual({ message: "Import started. Follow it in the Workflows tab of the app." });
+    expect(live.swell.workflows.create).toHaveBeenCalledWith("import-orders", { env: null, days: "90" });
+
+    const test = request({}, {}, rawSettings, testEnv);
+    await startImport(test.req);
+    expect(test.swell.workflows.create).toHaveBeenCalledWith("import-orders", { env: "test", days: null });
+  });
+
+  it("start-import refuses when the app is off or not set up, without starting a run", async () => {
+    for (const [settings, message] of [
+      [off, "Import not started: the Moneybird app is turned off in its settings."],
+      [{ api_token: "t" }, "Import not started: add the Administration ID in Apps → Moneybird."],
+    ] as const) {
+      const { req, swell } = request({}, {}, settings);
+      await expectFailure(startImport(req), message);
+      expect(swell.workflows.create).not.toHaveBeenCalled();
+    }
+  });
+
+  it("the import trusts the environment only from a run start-import started, and links to that dashboard", async () => {
+    const run = (trigger: string, data: any) => ({ workflow: { trigger }, data }) as any;
+    expect(runEnv(run("function", { env: "test" }))).toBe("test");
+    expect(runEnv(run("function", { env: "Test" }))).toBeNull();
+    expect(runEnv(run("action", { env: "test" }))).toBeNull();
+
+    const fetchMock = mockMoneybird();
+    const step = { do: vi.fn(async (_name: string, a: any, b?: any) => (typeof a === "function" ? a() : b())) } as any;
+    const { req } = request({ env: "test", days: "7" }, { pages: [[makeOrder()]] }, external);
+    // workflows get only the store id
+    (req as any).workflow = { trigger: "function" };
+    (req as any).store = { id: "shop" };
+    await new ImportOrders().run(req as any, step);
+    expect(bodyOf(fetchMock, "POST /external_sales_invoices").external_sales_invoice.source_url).toBe(`${STORE_URL}/admin/test/orders/${ORDER_ID}`);
+  });
+});
+
+describe("send-to-moneybird time limit", () => {
+  it("starts no order after the time budget and says how many are left", async () => {
+    mockMoneybird();
+    const orders = [makeOrder(), makeOrder({ id: "6ad0bd84dfd3c80012092510", number: "100547" })];
+    const { req, swell } = request({ $action: { collection: "orders", source: "bulk", selection: { query: { where: {} } } } }, { orders });
+    // the clock reads 0 until the first order registers its payment, which takes it past the budget
+    let now = 0;
+    vi.spyOn(Date, "now").mockImplementation(() => now);
+    const get = swell.get.getMockImplementation()!;
+    swell.get.mockImplementation(async (path: string, query?: any) => {
+      if (path === "/payments") now = 7_000;
+      return get(path, query);
+    });
+    const { message } = await sendToMoneybird(req);
+    expect(message).toContain("Sent 1 order to Moneybird: 100546");
+    expect(message).toContain(`Stopped before 1 more: ${TIME_LIMIT_REASON}.`);
+  });
+});
+
+describe("red error popups", () => {
+  const bulk = { $action: { collection: "orders", source: "bulk", selection: { query: { where: {} } } } };
+
+  it("shows a run where some orders failed as an error, listing the sent ones too", async () => {
+    // the second order's invoice is refused
+    mockMoneybird({
+      "GET /sales_invoices/find_by_reference/Order%20100547": fail(404, "record not found"),
+      "POST /sales_invoices": [ok({ id: INVOICE_ID, state: "draft" }, 201), fail(422, "details invalid")],
+    });
+    const other = makeOrder({ id: "6ad0bd84dfd3c80012092510", number: "100547" });
+    const { req } = request(bulk, { orders: [makeOrder(), other] });
+    await expectFailure(sendToMoneybird(req), /^Sent 1 order to Moneybird: 100546 .* Failed: 100547: Couldn't create the invoice: Moneybird refused it: details invalid/);
+  });
+
+  it("turns unexpected errors in every action into a red popup with a message", async () => {
+    const broken = () => {
+      const { req, swell } = request(bulk);
+      swell.settings.mockRejectedValue(new Error("settings unavailable"));
+      return req;
+    };
+    await expectFailure(sendToMoneybird(broken()), "Send to Moneybird failed: settings unavailable");
+    await expectFailure(startImport(broken()), "Send existing orders failed: settings unavailable");
+    await expectFailure(testConnection(broken()), "Test connection failed: settings unavailable");
   });
 });

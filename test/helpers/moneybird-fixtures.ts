@@ -13,6 +13,8 @@ export function makeSettings(overrides: Partial<MoneybirdSettings> = {}): Moneyb
   return { ...getSettings({ moneybird: rawSettings }), ...overrides };
 }
 
+// functions get the store's address without /admin; links to orders add it
+export const STORE_URL = "https://shop.swell.store";
 export const ADMIN_URL = "https://shop.swell.store/admin";
 export const ORDER_ID = "6ad0bd84dfd3c8001209250f";
 export const ACCOUNT_ID = "6abf95ed455bb60012798bfa";
@@ -131,6 +133,7 @@ export function makeSwell(records: Record<string, any> = {}, settings: any = raw
     get: vi.fn(async (path: string, query?: any) => {
       if (path === `/orders/${ORDER_ID}`) return "order" in records ? records.order : makeOrder();
       if (path === `/payments:refunds/${REFUND_ID}`) return records.refund ?? null;
+      if (path === "/payments") return { results: records.payments ?? [] };
       if (path === "/orders") {
         if (query?.where?.paid) return { results: pages.shift() ?? [] };
         return { results: "orders" in records ? records.orders : [makeOrder()] };
@@ -139,6 +142,7 @@ export function makeSwell(records: Record<string, any> = {}, settings: any = raw
     }),
     put: vi.fn().mockResolvedValue({}),
     settings: vi.fn().mockResolvedValue({ moneybird: settings }),
+    workflows: { create: vi.fn().mockResolvedValue({ id: "run_1" }) },
   };
 }
 

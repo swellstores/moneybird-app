@@ -1,6 +1,7 @@
 import { describe, it, expect, vi, afterEach, beforeEach } from "vitest";
 import {
   MoneybirdError,
+  adminUrlOf,
   connectionError,
   day,
   errorText,
@@ -9,7 +10,9 @@ import {
   matchTaxRate,
   missingSettings,
   moneybirdRequest,
+  orderUrl,
   salesTaxRates,
+  swellEnv,
 } from "../../functions/lib/moneybird";
 import { ADMIN, calls, fail, makeSettings, mockMoneybird, ok, rawSettings } from "../helpers/moneybird-fixtures";
 
@@ -78,7 +81,7 @@ describe("moneybirdRequest", () => {
     await salesTaxRates(makeSettings());
     expect(calls(fetchMock).map((c) => c.url)).toEqual([
       "https://moneybird.com/api/v2/administrations.json",
-      `https://moneybird.com/api/v2/${ADMIN}/tax_rates.json?filter=tax_rate_type%3Asales_invoice&per_page=100`,
+      `https://moneybird.com/api/v2/${ADMIN}/tax_rates.json?filter=tax_rate_type%3Asales_invoice%2Cactive%3Atrue&per_page=100&page=1`,
     ]);
   });
 
@@ -145,5 +148,45 @@ describe("tax rates", () => {
 
   it("formats dates as days", () => {
     expect(day("2026-10-15T23:48:23.000Z")).toBe("2026-10-15");
+  });
+});
+
+describe("environments and links", () => {
+  it("builds the dashboard address with /admin, and /admin/test in the test environment", () => {
+    expect(adminUrlOf({ id: "shop", admin_url: "https://shop.swell.store" })).toBe("https://shop.swell.store/admin");
+    expect(adminUrlOf({ id: "shop", admin_url: "https://shop.swell.store/admin/" })).toBe("https://shop.swell.store/admin");
+    expect(adminUrlOf({ id: "shop" })).toBe("https://shop.swell.store/admin");
+    expect(adminUrlOf({ id: "shop", admin_url: "https://shop.swell.store" }, "test")).toBe("https://shop.swell.store/admin/test");
+    expect(adminUrlOf({ id: "shop", admin_url: "https://shop.swell.store/admin/test" }, "test")).toBe("https://shop.swell.store/admin/test");
+    expect(adminUrlOf({}, "test")).toBe("");
+    expect(adminUrlOf(undefined)).toBe("");
+    expect(orderUrl("https://shop.swell.store/admin/", "o1")).toBe("https://shop.swell.store/admin/orders/o1");
+    expect(orderUrl("", "o1")).toBeUndefined();
+  });
+
+  it("reads the environment from the Swell-Env header", () => {
+    expect(swellEnv({ headers: new Headers({ "Swell-Env": "test" }) })).toBe("test");
+    expect(swellEnv({ headers: new Headers({ "Swell-Env": "Test" }) })).toBeNull();
+    expect(swellEnv({ headers: new Headers() })).toBeNull();
+    expect(swellEnv({})).toBeNull();
+  });
+});
+
+describe("salesTaxRates", () => {
+  it("reads every page of active sales tax rates", async () => {
+    const page = (from: number, count: number) =>
+      Array.from({ length: count }, (_, i) => ({ id: `tr_${from + i}`, name: `${from + i}%`, percentage: String(from + i), active: true, country: null }));
+    const fetchMock = mockMoneybird({ "GET /tax_rates": [ok(page(0, 100)), ok([...page(100, 1), { id: "old", percentage: "5", active: false }])] });
+    const rates = await salesTaxRates(makeSettings());
+    expect(rates).toHaveLength(101);
+    expect(rates.at(-1)).toEqual({ id: "tr_100", name: "100%", percentage: 100, country: null });
+    expect(calls(fetchMock).map((c) => new URL(c.url).searchParams.get("page"))).toEqual(["1", "2"]);
+    expect(new URL(calls(fetchMock)[0].url).searchParams.get("filter")).toBe("tax_rate_type:sales_invoice,active:true");
+  });
+
+  it("names the current place to create an API token", () => {
+    expect(connectionError(new MoneybirdError(401, "invalid token"))).toContain(
+      "Settings → Integrations → External applications → New API token",
+    );
   });
 });
