@@ -6,7 +6,7 @@
 	"integrations": [
 		"moneybird"
 	],
-	"version": "1.0.1",
+	"version": "1.0.2",
 	"permissions": [],
 	"support_email": "support@swell.is",
 	"documentation_url": "https://developers.swell.is/app-guides/moneybird",
