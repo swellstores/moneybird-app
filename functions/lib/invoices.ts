@@ -5,10 +5,13 @@ import {
   appValues,
   connectionError,
   day,
+  documentUrl,
+  fieldText,
+  fieldValue,
+  isSet,
   matchTaxRate,
   moneybirdRequest,
   money,
-  orderUrl,
   salesTaxRates,
   webUrl,
   type MoneybirdSettings,
@@ -17,6 +20,33 @@ import {
 } from './moneybird';
 
 export const ORDER_EXPAND = ['account', 'items.product', 'items.variant'];
+// a subscription invoice has no addresses of its own: the subscription's billing and shipping details are used
+export const INVOICE_EXPAND = ['account', 'subscription', 'items.product', 'items.variant'];
+
+// what the app books: an order, or a subscription invoice (a billing period of a subscription)
+export type DocumentKind = 'order' | 'invoice';
+
+// the kind of a record the sync functions get: orders have no kind, invoices are marked by forInvoice()
+export const kindOf = (record: any): DocumentKind => (record?.$kind === 'invoice' ? 'invoice' : 'order');
+
+// the record's path in the Swell API, where the app's values are saved
+export const recordPath = (record: any) => `/${kindOf(record) === 'invoice' ? 'invoices' : 'orders'}/${record?.id}`;
+
+// A subscription invoice in the shape the order sync reads: its subscription's billing and shipping details (the
+// customer's saved ones without a subscription), and its shipping total under the order field names. The invoice's
+// own fields (items, totals, currency, item_tax_included, account) already match the order's.
+export function forInvoice(invoice: any): any {
+  if (!invoice) return { $kind: 'invoice' };
+  const subscription = invoice.subscription || {};
+  return {
+    ...invoice,
+    $kind: 'invoice',
+    billing: invoice.billing || subscription.billing || invoice.account?.billing,
+    shipping: invoice.shipping || subscription.shipping || invoice.account?.shipping,
+    shipment_price: invoice.shipment_total,
+    shipment_discount: 0,
+  };
+}
 
 // the source name shown on external sales invoices
 export const SOURCE = 'Swell';
@@ -139,7 +169,7 @@ export async function ensureContact(
   appId: string,
 ): Promise<{ id: string; emailRefused: boolean }> {
   const account = order.account || { id: order.account_id };
-  const customerId = String(account.id || order.account_id || `order-${order.id}`);
+  const customerId = String(account.id || order.account_id || `${kindOf(order)}-${order.id}`);
   const existing = await findContact(settings, customerId);
   let contactId = existing?.id ? String(existing.id) : '';
   let emailRefused = false;
@@ -185,7 +215,8 @@ export function orderLines(order: any): Line[] {
     const unit = Number(item.price || 0) - Number(item.discount_each || 0);
     const tax = Number(item.tax_each || 0);
     const net = inclTax ? unit - tax : unit;
-    const name = item.product?.name || item.product_name || 'Product';
+    // invoice items carry a description instead of the product name
+    const name = item.product?.name || item.product_name || item.description || 'Product';
     const variant = item.variant?.name;
     return {
       description: variant ? `${name} – ${variant}` : name,
@@ -224,7 +255,7 @@ export function refundLines(order: any, amount: number): Line[] {
     byRate.set(line.percentage, (byRate.get(line.percentage) || 0) + line.price * line.amount);
   }
   const result = [...byRate.entries()].map(([percentage, sum]) => ({
-    description: `Refund of order ${order.number}${byRate.size > 1 ? ` (${percentage}% tax)` : ''}`,
+    description: `Refund of ${kindOf(order)} ${order.number}${byRate.size > 1 ? ` (${percentage}% tax)` : ''}`,
     price: -money(sum * ratio),
     amount: 1,
     percentage,
@@ -259,21 +290,61 @@ export function detailsAttributes(lines: Line[], rates: TaxRate[], settings: Mon
 const invoiceKind = (type: string) => (type === 'external_sales_invoice' ? 'external_sales_invoices' : 'sales_invoices');
 
 // the sales invoice's reference, which also finds an invoice an earlier run made but didn't save; test and live
-// orders can share numbers (and an administration), so test invoices get their own
-export function orderReference(order: any, env?: 'test' | null) {
-  return `${env === 'test' ? 'Test order' : 'Order'} ${order.number}`;
+// orders can share numbers (and an administration), so test invoices get their own. Subscription invoices are
+// "Invoice <number>": their numbers come from another sequence than order numbers
+// A merchant's own template (settings) replaces the default for sales and external invoices alike; {number} is the
+// Swell number, and is added when the template leaves it out, so references stay unique. Test references get " (test)".
+export function orderReference(order: any, env?: 'test' | null, settings?: Pick<MoneybirdSettings, 'order_reference' | 'invoice_reference'>) {
+  const kind = kindOf(order);
+  const template = referenceTemplate(kind, settings);
+  if (template) {
+    const reference = fillTemplate(template, order);
+    return env === 'test' ? `${reference} (test)` : reference;
+  }
+  return `${env === 'test' ? `Test ${kind}` : kind === 'invoice' ? 'Invoice' : 'Order'} ${order.number}`;
 }
 
-// the day of the order's last successful Swell payment, the same on every retry; the order date when it has none
-export async function paymentDay(swell: Pick<SwellClient, 'get'>, order: any): Promise<string> {
+// the reference of an external sales invoice, shown as its number: the order number, or the merchant's template;
+// subscription invoices get a prefix, as their numbers can be the same as order numbers
+export function externalReference(order: any, settings?: Pick<MoneybirdSettings, 'order_reference' | 'invoice_reference'>) {
+  const kind = kindOf(order);
+  const template = referenceTemplate(kind, settings);
+  if (template) return fillTemplate(template, order);
+  return kind === 'invoice' ? `INV-${order.number}` : String(order.number);
+}
+
+function referenceTemplate(kind: DocumentKind, settings?: Pick<MoneybirdSettings, 'order_reference' | 'invoice_reference'>): string {
+  const template = (kind === 'invoice' ? settings?.invoice_reference : settings?.order_reference) || '';
+  return template && !template.includes('{number}') ? `${template} {number}` : template;
+}
+
+const fillTemplate = (template: string, order: any) => template.replace(/\{number\}/g, String(order.number ?? ''));
+
+// what identifies the payment in Moneybird, so it can match the payout: the ID in the merchant's field, else the
+// gateway's transaction ID of the Swell payment (e.g. a Mollie payment ID), else "Swell order <number>"
+export function transactionIdentifier(order: any, settings: Pick<MoneybirdSettings, 'transaction_id_field'>, payment?: { transaction_id?: unknown } | null): string {
+  return (
+    fieldText(order, settings.transaction_id_field) ||
+    (typeof payment?.transaction_id === 'string' && payment.transaction_id.trim()) ||
+    `Swell ${kindOf(order)} ${order.number}`
+  );
+}
+
+// the order's last successful Swell payment (its date and gateway transaction ID), the same on every retry; null
+// when it has none
+export async function lastPayment(swell: Pick<SwellClient, 'get'>, order: any): Promise<{ date_created?: string; transaction_id?: string } | null> {
   const found = await swell.get('/payments', {
-    where: { order_id: order.id, success: true },
+    where: { [kindOf(order) === 'invoice' ? 'invoice_id' : 'order_id']: order.id, success: true },
     sort: 'date_created desc',
     limit: 1,
-    fields: 'date_created',
+    fields: 'date_created,transaction_id',
   });
-  const paidAt = found?.results?.[0]?.date_created;
-  return day(paidAt || order.date_created);
+  return found?.results?.[0] || null;
+}
+
+// the day of the order's last successful Swell payment; the order date when it has none
+export async function paymentDay(swell: Pick<SwellClient, 'get'>, order: any): Promise<string> {
+  return day((await lastPayment(swell, order))?.date_created || order.date_created);
 }
 
 interface DocumentInput {
@@ -363,21 +434,25 @@ const STATE_LABELS: Record<string, string> = {
 
 export const stateLabel = (state: unknown) => STATE_LABELS[String(state)] || String(state || '');
 
-// why an order isn't sent, or undefined when it can be
-export function orderSkipReason(order: any): string | undefined {
-  if (!order?.id) return 'order not found';
+// why an order (or subscription invoice) isn't sent, or undefined when it can be
+export function orderSkipReason(order: any, settings?: Pick<MoneybirdSettings, 'skip_field'>): string | undefined {
+  const kind = kindOf(order);
+  if (!order?.id) return `${kind} not found`;
   if (order.draft) return 'order is a draft';
-  if (!order.paid) return 'order is not paid';
-  if (!(Number(order.grand_total) > 0)) return 'order total is 0';
+  if (order.void) return `${kind} is void`;
+  if (!order.paid) return `${kind} is not paid`;
+  if (!(Number(order.grand_total) > 0)) return `${kind} total is 0`;
+  if (settings?.skip_field && isSet(fieldValue(order, settings.skip_field))) return `${settings.skip_field} is set on the ${kind}`;
   return undefined;
 }
 
 // Create the order's invoice, give it its number and register the payment. Each step is saved on the
 // order, so a retry continues where the last run stopped instead of creating a second invoice.
+// A subscription invoice (see forInvoice) is booked the same way, with its values saved on the invoice.
 export async function syncOrder(swell: SwellClient, settings: MoneybirdSettings, order: any, options: SyncOptions = {}): Promise<SyncResult> {
   const appId = options.appId || APP_ID;
-  const path = `/orders/${order?.id}`;
-  const reason = orderSkipReason(order);
+  const path = recordPath(order);
+  const reason = orderSkipReason(order, settings);
   if (reason) {
     return { status: 'skipped', reason };
   }
@@ -394,7 +469,7 @@ export async function syncOrder(swell: SwellClient, settings: MoneybirdSettings,
   try {
     if (!invoiceId && type === 'sales_invoice') {
       // an invoice made by an earlier run whose result wasn't saved
-      const found = await findByReference(typed, orderReference(order, options.env));
+      const found = await findByReference(typed, orderReference(order, options.env, settings));
       if (found?.id) {
         invoiceId = String(found.id);
         state = found.state;
@@ -409,12 +484,12 @@ export async function syncOrder(swell: SwellClient, settings: MoneybirdSettings,
       const { details, unmatched } = detailsAttributes(orderLines(order), rates, typed, order.billing?.country || order.shipping?.country);
       const invoice = await createDocument(typed, {
         contactId,
-        reference: type === 'sales_invoice' ? orderReference(order, options.env) : String(order.number),
+        reference: type === 'sales_invoice' ? orderReference(order, options.env, settings) : externalReference(order, settings),
         date: day(order.date_created),
         currency: order.currency,
         inclTax: Boolean(order.item_tax_included),
         details,
-        sourceUrl: orderUrl(options.adminUrl, order.id),
+        sourceUrl: documentUrl(options.adminUrl, kindOf(order), order.id),
       });
       invoiceId = String(invoice.id);
       state = invoice.state;
@@ -443,8 +518,9 @@ export async function syncOrder(swell: SwellClient, settings: MoneybirdSettings,
       const invoice = await moneybirdRequest(typed, 'GET', `/${invoiceKind(type)}/${invoiceId}`);
       const unpaid = unpaidOf(invoice);
       if (unpaid.price > 0) {
-        const paidOn = options.paymentDate || (await paymentDay(swell, order));
-        await registerPayment(typed, invoiceId, unpaid, paidOn, `Swell order ${order.number}`);
+        const payment = await lastPayment(swell, order);
+        const paidOn = options.paymentDate || day(payment?.date_created || order.date_created);
+        await registerPayment(typed, invoiceId, unpaid, paidOn, transactionIdentifier(order, settings, payment));
         done.push('payment registered');
       }
       await saveValues(swell, path, { moneybird_paid_at: new Date().toISOString(), moneybird_state: 'paid', moneybird_status: stateLabel('paid'), moneybird_error: null }, appId);
@@ -509,18 +585,19 @@ function totalNote(order: any, invoice: any, unmatched: number[], settings: Mone
 
 // --- refunds ---
 
-// Send a Swell refund as a credit invoice (sales invoices) or a negative external invoice, once per refund
+// Send a Swell refund as a credit invoice (sales invoices) or a negative external invoice, once per refund;
+// the order is the refunded order, or the refunded subscription invoice (see forInvoice)
 export async function syncRefund(
   swell: SwellClient,
   settings: MoneybirdSettings,
   order: any,
-  refund: { id: string; amount: unknown; number?: string; date_created?: string },
+  refund: { id: string; amount: unknown; number?: string; date_created?: string; transaction_id?: string },
   options: SyncOptions = {},
 ): Promise<SyncResult> {
   const appId = options.appId || APP_ID;
   const saved = appData(order, appId);
   const refundId = String(refund.id);
-  if (!saved.moneybird_invoice_id) return { status: 'skipped', reason: "the order isn't in Moneybird" };
+  if (!saved.moneybird_invoice_id) return { status: 'skipped', reason: `the ${kindOf(order)} isn't in Moneybird` };
   if (saved.moneybird_refunds_done?.[refundId]) return { status: 'unchanged', reason: 'refund already in Moneybird' };
   // a credit invoice an earlier run made but didn't finish (not numbered or not paid)
   const existingId: string | undefined = saved.moneybird_refunds?.[refundId];
@@ -530,9 +607,12 @@ export async function syncRefund(
 
   const type = saved.moneybird_invoice_type || settings.invoice_type;
   const typed = { ...settings, invoice_type: type } as MoneybirdSettings;
-  const path = `/orders/${order.id}`;
+  const path = recordPath(order);
+  const kind = kindOf(order);
   const step = { name: 'create the credit invoice' };
   const label = refund.number ? `Refund ${refund.number}` : 'Refund';
+  // "order 100546", or the merchant's own reference of the order's invoice
+  const of = referenceTemplate(kind, settings) ? orderReference(order, options.env, settings) : `${kind} ${order.number}`;
 
   try {
     let invoice: any;
@@ -545,12 +625,12 @@ export async function syncRefund(
       const { details } = detailsAttributes(refundLines(order, amount), rates, typed, order.billing?.country || order.shipping?.country);
       invoice = await createDocument(typed, {
         contactId,
-        reference: type === 'sales_invoice' ? `${label} of order ${order.number}` : `${order.number}-R${refund.number || refundId.slice(-6)}`,
+        reference: type === 'sales_invoice' ? `${label} of ${of}` : `${externalReference(order, settings)}-R${refund.number || refundId.slice(-6)}`,
         date: day(refund.date_created),
         currency: order.currency,
         inclTax: Boolean(order.item_tax_included),
         details,
-        sourceUrl: orderUrl(options.adminUrl, order.id),
+        sourceUrl: documentUrl(options.adminUrl, kind, order.id),
       });
       // saved first, so a retry finishes this credit invoice instead of creating a second one
       await saveValues(swell, path, { moneybird_refunds: { [refundId]: String(invoice.id) } }, appId);
@@ -567,7 +647,9 @@ export async function syncRefund(
       // nothing left to pay back: the payment was registered by an earlier run
       const due = Number.isNaN(unpaid.price) ? { price: -amount, base: undefined } : unpaid.price < 0 ? unpaid : null;
       if (due) {
-        await registerPayment(typed, creditId, due, day(refund.date_created), `Swell ${label.toLowerCase()} of order ${order.number}`);
+        // the gateway's refund ID when Swell has it, so Moneybird can match the refund in the payout
+        const transaction = typeof refund.transaction_id === 'string' && refund.transaction_id.trim() ? refund.transaction_id.trim() : `Swell ${label.toLowerCase()} of ${of}`;
+        await registerPayment(typed, creditId, due, day(refund.date_created), transaction);
       }
     }
 

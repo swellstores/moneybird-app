@@ -22,6 +22,10 @@ export const REFUND_ID = "6acf741edb7b280012017602";
 export const CONTACT_ID = "501000000000000001";
 export const INVOICE_ID = "501000000000000002";
 export const CREDIT_ID = "501000000000000003";
+// a Swell subscription invoice and the payment that paid it
+export const SWELL_INVOICE_ID = "6ad1c2a4dfd3c80012092a11";
+export const PAYMENT_ID = "6ad1c2a4dfd3c80012092a12";
+export const SUBSCRIPTION_ID = "6ad1c2a4dfd3c80012092a13";
 
 export function makeOrder(overrides: Record<string, any> = {}) {
   return {
@@ -40,6 +44,33 @@ export function makeOrder(overrides: Record<string, any> = {}) {
     account: { id: ACCOUNT_ID, email: "jane@example.com", first_name: "Jane", last_name: "Doe" },
     billing: { address1: "Hoofdstraat 1", zip: "1234AB", city: "Amsterdam", country: "nl" },
     shipping: { service_name: "PostNL" },
+    items: [{ product_id: "p1", product: { name: "Tee" }, variant: { name: "M" }, price: 25, discount_each: 0.8, tax_each: 4.2, quantity: 2 }],
+    ...overrides,
+  };
+}
+
+// a paid subscription invoice (a renewal), with the same items and totals as the order fixture
+export function makeSubscriptionInvoice(overrides: Record<string, any> = {}) {
+  return {
+    id: SWELL_INVOICE_ID,
+    number: "100021",
+    date_created: "2026-11-01T06:00:00.000Z",
+    currency: "EUR",
+    paid: true,
+    void: false,
+    item_tax_included: true,
+    grand_total: 54.45,
+    shipment_total: 5,
+    shipment_tax: 1.05,
+    shipment_tax_included: false,
+    account_id: ACCOUNT_ID,
+    account: { id: ACCOUNT_ID, email: "jane@example.com", first_name: "Jane", last_name: "Doe" },
+    subscription_id: SUBSCRIPTION_ID,
+    subscription: {
+      id: SUBSCRIPTION_ID,
+      billing: { address1: "Hoofdstraat 1", zip: "1234AB", city: "Amsterdam", country: "nl" },
+      shipping: { service_name: "PostNL" },
+    },
     items: [{ product_id: "p1", product: { name: "Tee" }, variant: { name: "M" }, price: 25, discount_each: 0.8, tax_each: 4.2, quantity: 2 }],
     ...overrides,
   };
@@ -133,6 +164,8 @@ export function makeSwell(records: Record<string, any> = {}, settings: any = raw
     get: vi.fn(async (path: string, query?: any) => {
       if (path === `/orders/${ORDER_ID}`) return "order" in records ? records.order : makeOrder();
       if (path === `/payments:refunds/${REFUND_ID}`) return records.refund ?? null;
+      if (path === `/invoices/${SWELL_INVOICE_ID}`) return "invoice" in records ? records.invoice : makeSubscriptionInvoice();
+      if (path === `/payments/${PAYMENT_ID}`) return records.payment ?? { id: PAYMENT_ID, invoice_id: SWELL_INVOICE_ID };
       if (path === "/payments") return { results: records.payments ?? [] };
       if (path === "/orders") {
         if (query?.where?.paid) return { results: pages.shift() ?? [] };

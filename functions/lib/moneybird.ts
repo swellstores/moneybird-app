@@ -39,7 +39,15 @@ export interface MoneybirdSettings {
   payment_without_proof: boolean;
   financial_account_id: string;
   send_refunds: boolean;
+  send_invoices: boolean;
   sync_contacts: boolean;
+  // optional reference templates with {number}; empty uses "Order <number>" / "Invoice <number>"
+  order_reference: string;
+  invoice_reference: string;
+  // field path on the order (or invoice) that holds the gateway transaction ID, for payments made outside Swell checkout
+  transaction_id_field: string;
+  // field path on the order (or invoice); records with a value there aren't sent
+  skip_field: string;
 }
 
 // read app settings and apply defaults for values the merchant has not saved yet
@@ -63,7 +71,12 @@ export function getSettings(all: any): MoneybirdSettings {
     payment_without_proof: flag(raw.payment_without_proof, false),
     financial_account_id: text(raw.financial_account_id),
     send_refunds: flag(raw.send_refunds, true),
+    send_invoices: flag(raw.send_invoices, true),
     sync_contacts: flag(raw.sync_contacts, true),
+    order_reference: text(raw.order_reference),
+    invoice_reference: text(raw.invoice_reference),
+    transaction_id_field: text(raw.transaction_id_field),
+    skip_field: text(raw.skip_field),
   };
 }
 
@@ -270,6 +283,28 @@ export function matchTaxRate(rates: TaxRate[], percentage: number, country?: str
   return close.find((rate) => upper && rate.country?.toUpperCase() === upper) || close.find((rate) => !rate.country) || close[0];
 }
 
+// --- record fields ---
+
+// the value at a dot path on a record ("mollie_payment.id", "metadata.test"); undefined when any part is missing
+export function fieldValue(record: any, path: string): unknown {
+  if (!path) return undefined;
+  return path.split('.').reduce<any>((value, key) => (value !== null && typeof value === 'object' ? value[key] : undefined), record);
+}
+
+// a field counts as set when it has a value: not null, empty text or an empty list, and not false
+export function isSet(value: unknown): boolean {
+  if (value === null || value === undefined || value === false) return false;
+  if (typeof value === 'string') return value.trim() !== '';
+  if (Array.isArray(value)) return value.length > 0;
+  return true;
+}
+
+// a field's value as text for Moneybird, or undefined when it's empty or not text/number
+export function fieldText(record: any, path: string): string | undefined {
+  const value = fieldValue(record, path);
+  return typeof value === 'string' && value.trim() ? value.trim() : typeof value === 'number' ? String(value) : undefined;
+}
+
 // --- dates, money, links ---
 
 export const money = (value: unknown) => Math.round((Number(value) || 0) * 100) / 100;
@@ -298,7 +333,12 @@ export function adminUrlOf(store?: { id?: string; admin_url?: string } | null, e
 
 // the order's page in the Swell dashboard, or undefined without a dashboard address
 export function orderUrl(adminUrl: string | undefined, orderId: string): string | undefined {
-  return adminUrl ? `${adminUrl.replace(/\/+$/, '')}/orders/${orderId}` : undefined;
+  return documentUrl(adminUrl, 'order', orderId);
+}
+
+// the page of an order or a subscription invoice in the Swell dashboard, or undefined without a dashboard address
+export function documentUrl(adminUrl: string | undefined, kind: 'order' | 'invoice', id: string): string | undefined {
+  return adminUrl ? `${adminUrl.replace(/\/+$/, '')}/${kind === 'invoice' ? 'invoices' : 'orders'}/${id}` : undefined;
 }
 
 export function webUrl(settings: Pick<MoneybirdSettings, 'administration_id'>, kind: 'sales_invoices' | 'external_sales_invoices' | 'contacts', id: string) {
