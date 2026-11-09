@@ -41,6 +41,13 @@ export interface MoneybirdSettings {
   send_refunds: boolean;
   send_invoices: boolean;
   sync_contacts: boolean;
+  // optional reference templates with {number}; empty uses "Order <number>" / "Invoice <number>"
+  order_reference: string;
+  invoice_reference: string;
+  // field path on the order (or invoice) that holds the gateway transaction ID, for payments made outside Swell checkout
+  transaction_id_field: string;
+  // field path on the order (or invoice); records with a value there aren't sent
+  skip_field: string;
 }
 
 // read app settings and apply defaults for values the merchant has not saved yet
@@ -66,6 +73,10 @@ export function getSettings(all: any): MoneybirdSettings {
     send_refunds: flag(raw.send_refunds, true),
     send_invoices: flag(raw.send_invoices, true),
     sync_contacts: flag(raw.sync_contacts, true),
+    order_reference: text(raw.order_reference),
+    invoice_reference: text(raw.invoice_reference),
+    transaction_id_field: text(raw.transaction_id_field),
+    skip_field: text(raw.skip_field),
   };
 }
 
@@ -270,6 +281,28 @@ export function matchTaxRate(rates: TaxRate[], percentage: number, country?: str
   const close = rates.filter((rate) => Math.abs(rate.percentage - percentage) < 0.1);
   const upper = country?.toUpperCase();
   return close.find((rate) => upper && rate.country?.toUpperCase() === upper) || close.find((rate) => !rate.country) || close[0];
+}
+
+// --- record fields ---
+
+// the value at a dot path on a record ("mollie_payment.id", "metadata.test"); undefined when any part is missing
+export function fieldValue(record: any, path: string): unknown {
+  if (!path) return undefined;
+  return path.split('.').reduce<any>((value, key) => (value !== null && typeof value === 'object' ? value[key] : undefined), record);
+}
+
+// a field counts as set when it has a value: not null, empty text or an empty list, and not false
+export function isSet(value: unknown): boolean {
+  if (value === null || value === undefined || value === false) return false;
+  if (typeof value === 'string') return value.trim() !== '';
+  if (Array.isArray(value)) return value.length > 0;
+  return true;
+}
+
+// a field's value as text for Moneybird, or undefined when it's empty or not text/number
+export function fieldText(record: any, path: string): string | undefined {
+  const value = fieldValue(record, path);
+  return typeof value === 'string' && value.trim() ? value.trim() : typeof value === 'number' ? String(value) : undefined;
 }
 
 // --- dates, money, links ---

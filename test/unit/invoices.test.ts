@@ -12,6 +12,7 @@ import {
   retryIfTemporary,
   syncOrder,
   syncRefund,
+  transactionIdentifier,
 } from "../../functions/lib/invoices";
 import { MoneybirdError } from "../../functions/lib/moneybird";
 import {
@@ -524,5 +525,102 @@ describe("subscription invoices", () => {
     const invoice = forInvoice(makeSubscriptionInvoice({ $app: { moneybird: { moneybird_invoice_id: INVOICE_ID, moneybird_invoice_type: "external_sales_invoice" } } }));
     await syncRefund(makeSwell() as any, makeSettings({ register_payments: false }), invoice, { id: REFUND_ID, amount: 10, number: "100015" });
     expect(bodyOf(fetchMock, "POST /external_sales_invoices").external_sales_invoice.reference).toBe("INV-100021-R100015");
+  });
+});
+
+describe("transaction identifier", () => {
+  it("prefers the merchant's field, then the Swell payment's gateway ID, then the Swell number", () => {
+    const order = makeOrder({ mollie_payment: { id: "tr_abc" }, metadata: { psp: 42 } });
+    expect(transactionIdentifier(order, makeSettings({ transaction_id_field: "mollie_payment.id" }), { transaction_id: "pi_1" })).toBe("tr_abc");
+    expect(transactionIdentifier(order, makeSettings({ transaction_id_field: "metadata.psp" }), null)).toBe("42");
+    expect(transactionIdentifier(order, makeSettings({ transaction_id_field: "mollie_payment.missing" }), { transaction_id: "pi_1" })).toBe("pi_1");
+    expect(transactionIdentifier(order, makeSettings(), { transaction_id: " " })).toBe("Swell order 100546");
+    expect(transactionIdentifier(forInvoice(makeSubscriptionInvoice()), makeSettings(), null)).toBe("Swell invoice 100021");
+  });
+
+  it("registers the payment with the Swell payment's gateway ID, and the refund with the refund's", async () => {
+    const fetchMock = mockMoneybird();
+    const swell = makeSwell({ payments: [{ date_created: "2026-10-15T12:00:00.000Z", transaction_id: "tr_7GhY" }] });
+    await syncOrder(swell as any, makeSettings(), makeOrder());
+    expect(bodyOf(fetchMock, `POST /sales_invoices/${INVOICE_ID}/payments`).payment).toEqual({ payment_date: "2026-10-15", price: "54.45", transaction_identifier: "tr_7GhY" });
+
+    vi.restoreAllMocks();
+    const credit = (overrides: Record<string, any> = {}) => makeInvoice({ id: CREDIT_ID, total_price_incl_tax: "-10.0", ...overrides });
+    const refundMock = mockMoneybird({
+      "POST /sales_invoices": ok(credit(), 201),
+      [`PATCH /sales_invoices/${CREDIT_ID}/send_invoice`]: ok(credit({ state: "open", invoice_id: "2026-0043", total_unpaid: "-10.0" })),
+      [`POST /sales_invoices/${CREDIT_ID}/payments`]: ok({ id: "pay_2" }, 201),
+    });
+    const sent = withApp({ moneybird_invoice_id: INVOICE_ID, moneybird_invoice_type: "sales_invoice" });
+    await syncRefund(makeSwell() as any, makeSettings(), sent, { id: REFUND_ID, amount: 10, number: "100015", transaction_id: "re_9" });
+    expect(bodyOf(refundMock, `POST /sales_invoices/${CREDIT_ID}/payments`).payment.transaction_identifier).toBe("re_9");
+  });
+
+  it("reads the merchant's field on the order when the payment was made outside Swell", async () => {
+    const fetchMock = mockMoneybird();
+    await syncOrder(makeSwell() as any, makeSettings({ transaction_id_field: "mollie_payment.id" }), makeOrder({ mollie_payment: { id: "tr_abc" } }));
+    expect(bodyOf(fetchMock, `POST /sales_invoices/${INVOICE_ID}/payments`).payment.transaction_identifier).toBe("tr_abc");
+  });
+});
+
+describe("reference templates", () => {
+  const templates = makeSettings({ order_reference: "orders-{number}", invoice_reference: "invoices-{number}" });
+
+  it("fills {number}, adds it when missing, and marks test references", () => {
+    expect(orderReference(makeOrder(), null, templates)).toBe("orders-100546");
+    expect(orderReference(makeOrder(), "test", templates)).toBe("orders-100546 (test)");
+    expect(orderReference(forInvoice(makeSubscriptionInvoice()), null, templates)).toBe("invoices-100021");
+    expect(externalReference(makeOrder(), templates)).toBe("orders-100546");
+    expect(externalReference(forInvoice(makeSubscriptionInvoice()), templates)).toBe("invoices-100021");
+    expect(orderReference(makeOrder(), null, makeSettings({ order_reference: "SMPL" }))).toBe("SMPL 100546");
+    // without templates nothing changes
+    expect(orderReference(makeOrder(), "test", makeSettings())).toBe("Test order 100546");
+    expect(externalReference(makeOrder(), makeSettings())).toBe("100546");
+  });
+
+  it("creates and finds the invoice by the template, and names credit invoices after it", async () => {
+    const credit = (overrides: Record<string, any> = {}) => makeInvoice({ id: CREDIT_ID, total_price_incl_tax: "-10.0", ...overrides });
+    const fetchMock = mockMoneybird({
+      "GET /sales_invoices/find_by_reference/orders-100546": fail(404, "record not found"),
+      [`PATCH /sales_invoices/${CREDIT_ID}/send_invoice`]: ok(credit({ state: "open", invoice_id: "2026-0043", total_unpaid: "-10.0" })),
+      [`POST /sales_invoices/${CREDIT_ID}/payments`]: ok({ id: "pay_2" }, 201),
+    });
+    const swell = makeSwell();
+    await syncOrder(swell as any, templates, makeOrder());
+    expect(callKeys(fetchMock)[0]).toBe("GET /sales_invoices/find_by_reference/orders-100546");
+    expect(bodyOf(fetchMock, "POST /sales_invoices").sales_invoice.reference).toBe("orders-100546");
+
+    vi.restoreAllMocks();
+    const refundMock = mockMoneybird({ "POST /sales_invoices": ok(credit(), 201), [`PATCH /sales_invoices/${CREDIT_ID}/send_invoice`]: ok(credit({ state: "open", invoice_id: "2026-0043", total_unpaid: "-10.0" })), [`POST /sales_invoices/${CREDIT_ID}/payments`]: ok({ id: "pay_2" }, 201) });
+    const sent = withApp({ moneybird_invoice_id: INVOICE_ID, moneybird_invoice_type: "sales_invoice" });
+    await syncRefund(makeSwell() as any, templates, sent, { id: REFUND_ID, amount: 10, number: "100015" });
+    expect(bodyOf(refundMock, "POST /sales_invoices").sales_invoice.reference).toBe("Refund 100015 of orders-100546");
+    expect(bodyOf(refundMock, `POST /sales_invoices/${CREDIT_ID}/payments`).payment.transaction_identifier).toBe("Swell refund 100015 of orders-100546");
+
+    vi.restoreAllMocks();
+    const externalMock = mockMoneybird({ "POST /external_sales_invoices": ok({ id: CREDIT_ID, state: "open", reference: "orders-100546-R100015", total_price_incl_tax: "-10.0" }, 201) });
+    const external = withApp({ moneybird_invoice_id: INVOICE_ID, moneybird_invoice_type: "external_sales_invoice" });
+    await syncRefund(makeSwell() as any, { ...templates, register_payments: false }, external, { id: REFUND_ID, amount: 10, number: "100015" });
+    expect(bodyOf(externalMock, "POST /external_sales_invoices").external_sales_invoice.reference).toBe("orders-100546-R100015");
+  });
+});
+
+describe("skip field", () => {
+  it("skips orders and invoices with a value in the field, and sends the rest", async () => {
+    const settings = makeSettings({ skip_field: "metadata.test" });
+    expect(orderSkipReason(makeOrder({ metadata: { test: true } }), settings)).toBe("metadata.test is set on the order");
+    expect(orderSkipReason(makeOrder({ metadata: { test: "yes" } }), settings)).toBe("metadata.test is set on the order");
+    expect(orderSkipReason(forInvoice(makeSubscriptionInvoice({ metadata: { test: 1 } })), settings)).toBe("metadata.test is set on the invoice");
+    for (const metadata of [undefined, { test: false }, { test: "" }, { test: null }, { test: [] }]) {
+      expect(orderSkipReason(makeOrder({ metadata }), settings)).toBeUndefined();
+    }
+    expect(orderSkipReason(makeOrder({ metadata: { test: true } }), makeSettings())).toBeUndefined();
+
+    const fetchMock = mockMoneybird();
+    const swell = makeSwell();
+    const result = await syncOrder(swell as any, settings, makeOrder({ metadata: { test: true } }));
+    expect(result).toEqual({ status: "skipped", reason: "metadata.test is set on the order" });
+    expect(fetchMock).not.toHaveBeenCalled();
+    expect(swell.put).not.toHaveBeenCalled();
   });
 });

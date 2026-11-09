@@ -156,6 +156,32 @@
           "label": "Revenue ledger account ID",
           "type": "short_text",
           "description": "Optional. Books all lines to this revenue account; empty uses Moneybird's default."
+        },
+        {
+          "id": "order_reference",
+          "label": "Order reference",
+          "type": "short_text",
+          "placeholder": "Order {number}",
+          "description": "Optional. The invoice reference for orders, with {number} for the Swell order number; empty gives 'Order 100546' on sales invoices and '100546' on external sales invoices. The reference is how the app finds an invoice a failed run created, so keep it unique and set it before the first order is sent."
+        },
+        {
+          "id": "invoice_reference",
+          "label": "Subscription invoice reference",
+          "type": "short_text",
+          "placeholder": "Invoice {number}",
+          "conditions": {
+            "send_invoices": {
+              "$ne": false
+            }
+          },
+          "description": "Optional. The same for subscription invoices, with {number} for the Swell invoice number; empty gives 'Invoice 100021' and 'INV-100021'."
+        },
+        {
+          "id": "skip_field",
+          "label": "Skip orders where this field is set",
+          "type": "short_text",
+          "placeholder": "metadata.test",
+          "description": "Optional. A field on the order (or subscription invoice), e.g. a custom field or metadata key that marks test orders placed in the live environment. Orders with a value in it aren't sent."
         }
       ]
     },
@@ -181,6 +207,18 @@
             }
           },
           "description": "Optional. The Moneybird account the payments arrive in, e.g. your payment provider's. Test connection lists the IDs."
+        },
+        {
+          "id": "transaction_id_field",
+          "label": "Transaction ID field",
+          "type": "short_text",
+          "placeholder": "mollie_payment.id",
+          "conditions": {
+            "register_payments": {
+              "$ne": false
+            }
+          },
+          "description": "Optional. Moneybird matches payouts (e.g. Mollie's) to payments by their transaction ID. The app sends the gateway's transaction ID of the Swell payment, else 'Swell order <number>'. When your payments are made outside Swell checkout, name the field on the order that holds the ID."
         },
         {
           "id": "payment_without_proof",

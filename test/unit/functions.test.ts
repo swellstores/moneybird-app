@@ -460,7 +460,7 @@ describe("environments", () => {
     await orderEvents(req);
     expect(bodyOf(fetchMock, `POST /sales_invoices/${INVOICE_ID}/payments`).payment.payment_date).toBe("2026-10-17");
     expect(swell.get).toHaveBeenCalledWith("/payments", {
-      where: { order_id: ORDER_ID, success: true }, sort: "date_created desc", limit: 1, fields: "date_created",
+      where: { order_id: ORDER_ID, success: true }, sort: "date_created desc", limit: 1, fields: "date_created,transaction_id",
     });
   });
 

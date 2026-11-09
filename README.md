@@ -30,7 +30,8 @@ When an order is paid (`order.paid`), and it isn't a draft and its total is abov
    (delivery `Manual`) and the order's note says so. The contact's ID and link are saved on the customer.
 2. **Invoice** – with **Book orders as**:
    - *Sales invoices* (default): `POST /sales_invoices` with reference `Order <number>` (`Test order <number>` in
-     the test environment), the order date, currency, the optional workflow and document style. Before creating, the
+     the test environment, or the **Order reference** template, below), the order date, currency, the optional
+     workflow and document style. Before creating, the
      app looks for an invoice with that reference (`find_by_reference`), so an invoice created by a run whose result
      wasn't saved is reused. Test orders have their own reference, so a test order never takes over the invoice of a
      live order with the same number when both environments use one administration.
@@ -43,9 +44,27 @@ When an order is paid (`order.paid`), and it isn't a draft and its total is abov
 4. **Payment** – with **Register payments** on, `POST /…/<id>/payments` for the invoice's unpaid total, with the same
    amount in the administration's currency (`price_base`, from `total_unpaid_base`; Moneybird requires it for
    invoices in another currency), dated on the order's last successful Swell payment (the order date when it has
-   none), so a retry keeps the same date, with `transaction_identifier: Swell order <number>`, the
+   none), so a retry keeps the same date, with the `transaction_identifier` Moneybird matches payouts by (below), the
    optional **Financial account ID**, and `manual_payment_action: payment_without_proof` when **Payments without proof**
    is on.
+
+**Transaction identifier.** Moneybird's bank and PSP links (Mollie, for one) match a payout to the invoice payment
+with the same `transaction_identifier`. It's, in this order: the value of the order field named in **Transaction ID
+field** (a dot path such as `mollie_payment.id` or `metadata.psp_id`, for payments made outside Swell checkout),
+else the `transaction_id` of the order's last successful Swell payment (the gateway's ID, e.g. a Mollie `tr_…`), else
+`Swell order <number>`. A refund payment gets the Swell refund's `transaction_id` (the gateway's refund ID), else
+`Swell refund <n> of order <number>`.
+
+**References.** **Order reference** and **Subscription invoice reference** replace the default references with a
+template, used for sales and external sales invoices alike and for the lookups above: `{number}` is the Swell number
+(added at the end when a template leaves it out, so references stay unique), and the test environment adds
+` (test)`. Credit invoices become `Refund <n> of <reference>` and `<reference>-R<n>`. Set a template before the
+first order is sent: an invoice an earlier run created under another reference and didn't save isn't found again.
+
+**Skipping orders.** With **Skip orders where this field is set**, an order (or subscription invoice) that has a
+value at that dot path, e.g. `metadata.test` or a custom field, isn't sent ("metadata.test is set on the order"):
+for test orders placed in the live environment, or orders another system books. Empty, null, false and empty lists
+don't count as set.
 
 Each step is saved on the order (`moneybird_invoice_id`, `moneybird_state`, `moneybird_paid_at`), so a retry or a
 later **Send to Moneybird** continues where the last run stopped. An invoice keeps the type it was created as when
@@ -77,8 +96,9 @@ gives it the order field names):
   sequences and can be the same;
 - the lines are the invoice's items (the product's name, else the item's description) and its shipping total
   (`shipment_total`, `Shipping – <service>` with the subscription's shipping service);
-- the payment is dated on the invoice's last successful Swell payment, with `transaction_identifier: Swell invoice
-  <number>`, and the external invoice links to the invoice in the dashboard (`…/admin/invoices/<id>`);
+- the payment is dated on the invoice's last successful Swell payment and identified like an order's payment (the
+  field, the payment's `transaction_id`, else `Swell invoice <number>`), and the external invoice links to the
+  invoice in the dashboard (`…/admin/invoices/<id>`);
 - the steps are saved on the invoice (`models/invoices.json`, the same fields as on orders), and the invoice's page
   shows them in its Moneybird section.
 
@@ -193,6 +213,10 @@ minute, doubling).
 | `enabled`               | toggle | on              | Turns off everything the app sends.                                                           |
 | `invoice_type`          | select | `sales_invoice` | `sales_invoice` or `external_sales_invoice`.                                                  |
 | `send_invoices`         | toggle | on              | Book paid subscription invoices, and their refunds.                                          |
+| `order_reference`       | text   |                 | Reference template for orders, with `{number}`; empty uses the defaults.                     |
+| `invoice_reference`     | text   |                 | Reference template for subscription invoices, with `{number}`.                               |
+| `skip_field`            | text   |                 | Dot path on the order; orders with a value there aren't sent.                                |
+| `transaction_id_field`  | text   |                 | Dot path on the order holding the gateway transaction ID for the payment.                    |
 | `finalize`              | select | `manual`        | Sales and credit invoices: `manual` (mark as sent), `email`, `draft`.                         |
 | `workflow_id`           | text   |                 | Sales invoices: Moneybird workflow; empty uses the default.                                  |
 | `document_style_id`     | text   |                 | Sales invoices: document style; empty uses the default.                                      |
