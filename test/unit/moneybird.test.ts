@@ -40,6 +40,7 @@ describe("settings", () => {
       payment_without_proof: false,
       financial_account_id: "",
       send_refunds: true,
+      send_invoices: true,
       sync_contacts: true,
     });
   });

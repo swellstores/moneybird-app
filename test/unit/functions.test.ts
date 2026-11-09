@@ -8,11 +8,14 @@ import {
   STORE_URL,
   INVOICE_ID,
   ORDER_ID,
+  PAYMENT_ID,
   REFUND_ID,
+  SWELL_INVOICE_ID,
   bodyOf,
   callKeys,
   fail,
   makeOrder,
+  makeSubscriptionInvoice,
   makeSwell,
   mockMoneybird,
   ok,
@@ -21,6 +24,7 @@ import {
 } from "../helpers/moneybird-fixtures";
 import orderEvents, { config as orderConfig } from "../../functions/order-events";
 import refundEvents, { config as refundConfig } from "../../functions/refund-events";
+import invoiceEvents, { config as invoiceConfig } from "../../functions/invoice-events";
 import accountEvents, { config as accountConfig, isContactChange } from "../../functions/account-events";
 import testConnection, { config as testConfig } from "../../functions/test-connection";
 import sendToMoneybird, { MAX_SELECTION, config as sendConfig } from "../../functions/send-to-moneybird";
@@ -95,6 +99,45 @@ describe("order-events", () => {
   });
 });
 
+describe("invoice-events", () => {
+  const invoicePath = `/invoices/${SWELL_INVOICE_ID}`;
+  const routes = { "GET /sales_invoices/find_by_reference/Invoice%20100021": fail(404, "record not found") };
+
+  it("sends paid subscription invoices", async () => {
+    expect(invoiceConfig.model?.events).toEqual(["invoice.payment_succeeded"]);
+    const fetchMock = mockMoneybird(routes);
+    const { req, swell } = request({ id: SWELL_INVOICE_ID, $event: { type: "invoice.payment_succeeded" } });
+    await invoiceEvents(req);
+    expect(swell.get).toHaveBeenCalledWith(invoicePath, { expand: ["account", "subscription", "items.product", "items.variant"] });
+    expect(bodyOf(fetchMock, "POST /sales_invoices").sales_invoice.reference).toBe("Invoice 100021");
+    expect(bodyOf(fetchMock, `POST /sales_invoices/${INVOICE_ID}/payments`).payment.transaction_identifier).toBe("Swell invoice 100021");
+    expect(savedOn(swell, invoicePath).moneybird_invoice_id).toBe(INVOICE_ID);
+    expect(logSpy).toHaveBeenCalledWith(`Moneybird: invoice 100021 - created, marked as sent, payment registered (${INVOICE_ID})`);
+  });
+
+  it("does nothing when subscription invoices are off, or the app is off or not set up", async () => {
+    const fetchMock = mockMoneybird(routes);
+    for (const settings of [off, { api_token: "t" }, { ...rawSettings, send_invoices: false }]) {
+      const { req, swell } = request({ id: SWELL_INVOICE_ID }, {}, settings);
+      await invoiceEvents(req);
+      expect(swell.get).not.toHaveBeenCalled();
+    }
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it("skips an unpaid invoice and throws temporary failures so Swell runs the event again", async () => {
+    mockMoneybird(routes);
+    const { req, swell } = request({ id: SWELL_INVOICE_ID }, { invoice: { id: SWELL_INVOICE_ID, number: "100021", paid: false, grand_total: 10 } });
+    await invoiceEvents(req);
+    expect(swell.put).not.toHaveBeenCalled();
+    expect(logSpy).toHaveBeenCalledWith("Moneybird: invoice 100021 not sent - invoice is not paid");
+
+    vi.restoreAllMocks();
+    mockMoneybird({ ...routes, "POST /sales_invoices": fail(503, "down") });
+    await expect(invoiceEvents(request({ id: SWELL_INVOICE_ID }).req)).rejects.toMatchObject({ status: 503 });
+  });
+});
+
 describe("refund-events", () => {
   const sentOrder = makeOrder({ $app: { moneybird: { moneybird_invoice_id: INVOICE_ID, moneybird_invoice_type: "sales_invoice" } } });
   const refund = { id: REFUND_ID, order_id: ORDER_ID, amount: 10, number: "100015" };
@@ -129,6 +172,29 @@ describe("refund-events", () => {
       expect(swell.get).not.toHaveBeenCalled();
     }
     await refundEvents(request({ id: REFUND_ID, amount: 5 }, { refund: { id: REFUND_ID, amount: 5 } }).req);
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it("sends a refund of a subscription invoice, found through the refund's payment", async () => {
+    const fetchMock = mockMoneybird(creditRoutes);
+    const invoice = makeSubscriptionInvoice({ $app: { moneybird: { moneybird_invoice_id: INVOICE_ID, moneybird_invoice_type: "sales_invoice" } } });
+    const { req, swell } = request({ id: REFUND_ID, parent_id: PAYMENT_ID, amount: 10, number: "100015" }, { invoice });
+    await refundEvents(req);
+    expect(swell.get).toHaveBeenCalledWith(`/payments/${PAYMENT_ID}`, { fields: "invoice_id" });
+    expect(swell.get).toHaveBeenCalledWith(`/invoices/${SWELL_INVOICE_ID}`, { expand: ["account", "subscription", "items.product", "items.variant"] });
+    expect(bodyOf(fetchMock, "POST /sales_invoices").sales_invoice.reference).toBe("Refund 100015 of invoice 100021");
+    expect(savedOn(swell, `/invoices/${SWELL_INVOICE_ID}`).moneybird_refunds).toEqual({ [REFUND_ID]: "cr_1" });
+  });
+
+  it("does nothing for a refund of a payment without an order or invoice, or when subscription invoices are off", async () => {
+    const fetchMock = mockMoneybird(creditRoutes);
+    const { req, swell } = request({ id: REFUND_ID, parent_id: PAYMENT_ID, amount: 10 }, { payment: { id: PAYMENT_ID } });
+    await refundEvents(req);
+    expect(swell.put).not.toHaveBeenCalled();
+
+    const offInvoices = request({ id: REFUND_ID, parent_id: PAYMENT_ID, amount: 10 }, {}, { ...rawSettings, send_invoices: false });
+    await refundEvents(offInvoices.req);
+    expect(offInvoices.swell.get).not.toHaveBeenCalledWith(`/payments/${PAYMENT_ID}`, expect.anything());
     expect(fetchMock).not.toHaveBeenCalled();
   });
 });

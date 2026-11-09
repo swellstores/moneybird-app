@@ -4,6 +4,7 @@ Connect Moneybird with a personal API token, and choose whether new invoices are
 
 - **Sales or external invoices.** Sales invoices are numbered by Moneybird and use your workflow and document style. External sales invoices record the order with the Swell order number as reference.
 - **Payments registered.** The order's payment is registered on its invoice, on the financial account you choose or as a payment without proof. Orders in other currencies are invoiced in their own currency.
+- **Subscription renewals too.** Each paid subscription invoice is booked like an order, with its own reference, and refunds on it become credit invoices.
 - **Refunds as credit invoices.** Each full or partial refund becomes a credit invoice for the refunded amount, split over the order's tax percentages so the tax is reversed in proportion, and its refund payment is registered.
 - **The right tax rate on every line.** Each item and the shipping get the Moneybird sales tax rate with the percentage your store charged, preferring a rate for the customer's country. Lines without a match get the default tax rate you choose, and the order notes them.
 - **Customers as contacts.** Each customer becomes a Moneybird contact with their first order, with their name, address, email, phone and VAT number. Later changes to their account are sent to the contact.

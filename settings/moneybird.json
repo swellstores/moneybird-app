@@ -1,7 +1,7 @@
 {
   "$schema": "https://json.swell.store/setting.json",
   "label": "Moneybird",
-  "description": "Send paid Swell orders to Moneybird as invoices, register their payments, and book refunds as credit invoices. In Moneybird open Settings → Integrations → External applications → New API token, and give it access to sales invoices and settings.",
+  "description": "Send paid Swell orders and subscription invoices to Moneybird as invoices, register their payments, and book refunds as credit invoices. In Moneybird open Settings → Integrations → External applications → New API token, and give it access to sales invoices and settings.",
   "actions": [
     {
       "id": "test_connection",
@@ -88,6 +88,14 @@
               "label": "External sales invoices"
             }
           ]
+        },
+        {
+          "id": "send_invoices",
+          "label": "Send subscription invoices",
+          "type": "boolean",
+          "ui": "toggle",
+          "default": true,
+          "description": "Books each paid subscription invoice (a renewal) the same way as an order, and its refunds as credit invoices"
         },
         {
           "id": "finalize",

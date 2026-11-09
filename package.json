@@ -1,5 +1,5 @@
 {
-  "description": "Send orders, payments and refunds to Moneybird",
+  "description": "Send orders, subscription invoices, payments and refunds to Moneybird",
   "devDependencies": {
     "@swell/app-types": "^1.2.0",
     "typescript": "^5.9.3",

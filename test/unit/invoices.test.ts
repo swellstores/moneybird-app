@@ -2,7 +2,12 @@ import { describe, it, expect, vi, afterEach, beforeEach } from "vitest";
 import {
   contactFields,
   detailsAttributes,
+  externalReference,
+  forInvoice,
   orderLines,
+  orderReference,
+  orderSkipReason,
+  recordPath,
   refundLines,
   retryIfTemporary,
   syncOrder,
@@ -17,6 +22,7 @@ import {
   INVOICE_ID,
   ORDER_ID,
   REFUND_ID,
+  SWELL_INVOICE_ID,
   bodyOf,
   callKeys,
   calls,
@@ -24,6 +30,7 @@ import {
   makeInvoice,
   makeOrder,
   makeSettings,
+  makeSubscriptionInvoice,
   makeSwell,
   mockMoneybird,
   ok,
@@ -413,5 +420,109 @@ describe("syncRefund", () => {
     const result = await syncRefund(swell as any, makeSettings(), sent(), refund);
     expect(result).toMatchObject({ status: "failed", retry: true, reason: "Refund 100015: couldn't mark the credit invoice as sent: Moneybird is not available right now (Moneybird 503: down), try again later." });
     expect(savedOn(swell, orderPath).moneybird_refunds).toEqual({ [REFUND_ID]: CREDIT_ID });
+  });
+});
+
+describe("subscription invoices", () => {
+  const invoicePath = `/invoices/${SWELL_INVOICE_ID}`;
+  const invoiceRoutes = {
+    "GET /sales_invoices/find_by_reference/Invoice%20100021": fail(404, "record not found"),
+    "GET /sales_invoices/find_by_reference/Test%20invoice%20100021": fail(404, "record not found"),
+  };
+
+  it("reads the invoice like an order: the subscription's addresses, its shipping total and item descriptions", () => {
+    const invoice = forInvoice(makeSubscriptionInvoice({ items: [{ description: "Coffee subscription", price: 25, discount_each: 0.8, tax_each: 4.2, quantity: 2 }] }));
+    expect(recordPath(invoice)).toBe(invoicePath);
+    expect(recordPath(makeOrder())).toBe(orderPath);
+    expect(orderLines(invoice)).toEqual([
+      { description: "Coffee subscription", price: 24.2, amount: 2, percentage: 21 },
+      { description: "Shipping – PostNL", price: 6.05, amount: 1, percentage: 21 },
+    ]);
+    expect(contactFields(invoice.account, invoice)).toMatchObject({ city: "Amsterdam", country: "NL", firstname: "Jane" });
+    expect(orderReference(invoice)).toBe("Invoice 100021");
+    expect(orderReference(invoice, "test")).toBe("Test invoice 100021");
+    expect(externalReference(invoice)).toBe("INV-100021");
+    expect(externalReference(makeOrder())).toBe("100546");
+    // the customer's saved address when the invoice has no subscription
+    const bare = forInvoice(makeSubscriptionInvoice({ subscription: null, account: { id: ACCOUNT_ID, billing: { city: "Utrecht" } } }));
+    expect(bare.billing).toEqual({ city: "Utrecht" });
+    expect(orderLines(bare)[1].description).toBe("Shipping");
+  });
+
+  it("skips void, unpaid and free invoices", () => {
+    expect(orderSkipReason(forInvoice(makeSubscriptionInvoice({ void: true })))).toBe("invoice is void");
+    expect(orderSkipReason(forInvoice(makeSubscriptionInvoice({ paid: false })))).toBe("invoice is not paid");
+    expect(orderSkipReason(forInvoice(makeSubscriptionInvoice({ grand_total: 0 })))).toBe("invoice total is 0");
+    expect(orderSkipReason(forInvoice(null))).toBe("invoice not found");
+    expect(orderSkipReason(forInvoice(makeSubscriptionInvoice()))).toBeUndefined();
+  });
+
+  it("creates, numbers and pays a sales invoice for a paid subscription invoice, saved on the invoice", async () => {
+    const fetchMock = mockMoneybird(invoiceRoutes);
+    const swell = makeSwell({ payments: [{ date_created: "2026-11-01T06:05:00.000Z" }] });
+    const result = await syncOrder(swell as any, makeSettings(), forInvoice(makeSubscriptionInvoice()), { adminUrl: "https://a" });
+
+    expect(result).toEqual({ status: "sent", invoice_id: INVOICE_ID, done: ["created", "marked as sent", "payment registered"] });
+    expect(callKeys(fetchMock)[0]).toBe("GET /sales_invoices/find_by_reference/Invoice%20100021");
+    expect(bodyOf(fetchMock, "POST /sales_invoices")).toEqual({
+      sales_invoice: {
+        contact_id: CONTACT_ID,
+        reference: "Invoice 100021",
+        invoice_date: "2026-11-01",
+        currency: "EUR",
+        prices_are_incl_tax: true,
+        details_attributes: [
+          { description: "Tee – M", price: "24.20", amount: "2", tax_rate_id: "tr_21" },
+          { description: "Shipping – PostNL", price: "6.05", amount: "1", tax_rate_id: "tr_21" },
+        ],
+      },
+    });
+    // the payment's date comes from the invoice's payments, not the order's
+    expect(swell.get).toHaveBeenCalledWith("/payments", expect.objectContaining({ where: { invoice_id: SWELL_INVOICE_ID, success: true } }));
+    expect(bodyOf(fetchMock, `POST /sales_invoices/${INVOICE_ID}/payments`)).toEqual({
+      payment: { payment_date: "2026-11-01", price: "54.45", transaction_identifier: "Swell invoice 100021" },
+    });
+    expect(savedOn(swell, invoicePath)).toMatchObject({ moneybird_invoice_id: INVOICE_ID, moneybird_state: "paid", moneybird_error: null });
+    expect(savedOn(swell, orderPath)).toEqual({});
+    expect(savedOn(swell, `/accounts/${ACCOUNT_ID}`)).toMatchObject({ moneybird_contact_id: CONTACT_ID });
+  });
+
+  it("books an external sales invoice with a prefixed reference and a link to the invoice", async () => {
+    const fetchMock = mockMoneybird({ "POST /external_sales_invoices": ok({ id: INVOICE_ID, state: "open", reference: "INV-100021", total_price_incl_tax: "54.45" }, 201) });
+    const swell = makeSwell();
+    await syncOrder(swell as any, makeSettings({ invoice_type: "external_sales_invoice" }), forInvoice(makeSubscriptionInvoice()), { adminUrl: "https://a/admin" });
+    expect(bodyOf(fetchMock, "POST /external_sales_invoices").external_sales_invoice).toMatchObject({
+      reference: "INV-100021",
+      source_url: `https://a/admin/invoices/${SWELL_INVOICE_ID}`,
+    });
+    expect(savedOn(swell, invoicePath).moneybird_invoice_number).toBe("INV-100021");
+  });
+
+  it("books a refund of a subscription invoice as a credit invoice of the invoice", async () => {
+    const credit = (overrides: Record<string, any> = {}) => makeInvoice({ id: CREDIT_ID, total_price_incl_tax: "-10.0", ...overrides });
+    const fetchMock = mockMoneybird({
+      "POST /sales_invoices": ok(credit(), 201),
+      [`PATCH /sales_invoices/${CREDIT_ID}/send_invoice`]: ok(credit({ state: "open", invoice_id: "2026-0043", total_unpaid: "-10.0" })),
+      [`POST /sales_invoices/${CREDIT_ID}/payments`]: ok({ id: "pay_2" }, 201),
+    });
+    const swell = makeSwell();
+    const invoice = forInvoice(makeSubscriptionInvoice({ $app: { moneybird: { moneybird_invoice_id: INVOICE_ID, moneybird_invoice_type: "sales_invoice" } } }));
+    const refund = { id: REFUND_ID, amount: 10, number: "100015", date_created: "2026-11-02T08:00:00.000Z" };
+    const result = await syncRefund(swell as any, makeSettings(), invoice, refund, { adminUrl: "https://a/admin" });
+
+    expect(result).toEqual({ status: "sent", invoice_id: CREDIT_ID, done: ["refund"] });
+    expect(bodyOf(fetchMock, "POST /sales_invoices").sales_invoice).toMatchObject({
+      reference: "Refund 100015 of invoice 100021",
+      details_attributes: [{ description: "Refund of invoice 100021", price: "-10.00", amount: "1", tax_rate_id: "tr_21" }],
+    });
+    expect(bodyOf(fetchMock, `POST /sales_invoices/${CREDIT_ID}/payments`).payment.transaction_identifier).toBe("Swell refund 100015 of invoice 100021");
+    expect(savedOn(swell, invoicePath)).toMatchObject({ moneybird_refunds_done: { [REFUND_ID]: true }, moneybird_refund_total: 10 });
+  });
+
+  it("gives an external credit invoice the prefixed reference too", async () => {
+    const fetchMock = mockMoneybird({ "POST /external_sales_invoices": ok({ id: CREDIT_ID, state: "open", reference: "INV-100021-R100015", total_price_incl_tax: "-10.0" }, 201) });
+    const invoice = forInvoice(makeSubscriptionInvoice({ $app: { moneybird: { moneybird_invoice_id: INVOICE_ID, moneybird_invoice_type: "external_sales_invoice" } } }));
+    await syncRefund(makeSwell() as any, makeSettings({ register_payments: false }), invoice, { id: REFUND_ID, amount: 10, number: "100015" });
+    expect(bodyOf(fetchMock, "POST /external_sales_invoices").external_sales_invoice.reference).toBe("INV-100021-R100015");
   });
 });

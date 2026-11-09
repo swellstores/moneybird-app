@@ -1,0 +1,64 @@
+{
+  "$schema": "https://json.swell.store/content.json",
+  "collection": "invoices",
+  "description": "Moneybird invoice on the subscription invoice page",
+  "fields": [
+    {
+      "id": "moneybird_invoice_number",
+      "label": "Moneybird invoice",
+      "type": "short_text",
+      "readonly": true,
+      "admin_zone": "content"
+    },
+    {
+      "id": "moneybird_status",
+      "label": "Status in Moneybird",
+      "type": "short_text",
+      "readonly": true,
+      "description": "When the app last changed the invoice",
+      "admin_zone": "content"
+    },
+    {
+      "id": "moneybird_invoice_url",
+      "label": "Open in Moneybird",
+      "type": "url",
+      "readonly": true,
+      "admin_zone": "content"
+    },
+    {
+      "id": "moneybird_paid_at",
+      "label": "Payment registered",
+      "type": "datetime",
+      "readonly": true,
+      "admin_zone": "content"
+    },
+    {
+      "id": "moneybird_refund_total",
+      "label": "Refunded in Moneybird",
+      "type": "number",
+      "readonly": true,
+      "admin_zone": "content"
+    },
+    {
+      "id": "moneybird_credit_invoices",
+      "label": "Credit invoices",
+      "type": "long_text",
+      "readonly": true,
+      "admin_zone": "content"
+    },
+    {
+      "id": "moneybird_note",
+      "label": "Note",
+      "type": "long_text",
+      "readonly": true,
+      "admin_zone": "content"
+    },
+    {
+      "id": "moneybird_error",
+      "label": "Error",
+      "type": "long_text",
+      "readonly": true,
+      "admin_zone": "content"
+    }
+  ]
+}

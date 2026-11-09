@@ -1,8 +1,8 @@
 # Moneybird
 
-A Swell app that books paid orders in [Moneybird](https://www.moneybird.com) as sales invoices or external sales
-invoices, registers their payments, books refunds as credit invoices, and keeps the customer's Moneybird contact up to
-date. It uses the [Moneybird API v2](https://developer.moneybird.com) with a personal API token.
+A Swell app that books paid orders and subscription invoices in [Moneybird](https://www.moneybird.com) as sales
+invoices or external sales invoices, registers their payments, books refunds as credit invoices, and keeps the
+customer's Moneybird contact up to date. It uses the [Moneybird API v2](https://developer.moneybird.com) with a personal API token.
 
 ## Features
 
@@ -13,7 +13,8 @@ kept as strings.
 | Swell event                | What happens in Moneybird                                     | Function                     |
 | -------------------------- | ------------------------------------------------------------- | ---------------------------- |
 | `order.paid`               | Contact found or created, invoice created, numbered and paid  | `functions/order-events.ts`  |
-| `payment.refund.succeeded` | Credit invoice (or negative external invoice) for the refund  | `functions/refund-events.ts` |
+| `invoice.payment_succeeded`| The same for a paid subscription invoice (a renewal)          | `functions/invoice-events.ts`|
+| `payment.refund.succeeded` | Credit invoice (or negative external invoice) for the refund of an order or a subscription invoice | `functions/refund-events.ts` |
 | `account.updated`          | The customer's existing contact is updated                    | `functions/account-events.ts`|
 
 ### Orders
@@ -62,6 +63,29 @@ aren't invoice lines.
 The order's **Note** shows tax percentages without a matching rate and a Moneybird total that differs from Swell's
 grand total.
 
+### Subscription invoices
+
+A subscription's renewals are Swell invoices, not orders, so with **Send subscription invoices** on (default) each
+paid subscription invoice (`invoice.payment_succeeded`, fired when a payment on the invoice succeeds) is booked like
+an order, by `functions/invoice-events.ts` and the same `syncOrder` (the invoice is read through `forInvoice`, which
+gives it the order field names):
+
+- the contact is the invoice's customer, with the subscription's billing and shipping details (the customer's saved
+  ones when the invoice has no subscription);
+- the sales invoice's reference is `Invoice <number>` (`Test invoice <number>` in the test environment); an external
+  sales invoice gets `INV-<number>`, because subscription invoice numbers and order numbers come from separate
+  sequences and can be the same;
+- the lines are the invoice's items (the product's name, else the item's description) and its shipping total
+  (`shipment_total`, `Shipping – <service>` with the subscription's shipping service);
+- the payment is dated on the invoice's last successful Swell payment, with `transaction_identifier: Swell invoice
+  <number>`, and the external invoice links to the invoice in the dashboard (`…/admin/invoices/<id>`);
+- the steps are saved on the invoice (`models/invoices.json`, the same fields as on orders), and the invoice's page
+  shows them in its Moneybird section.
+
+Void, unpaid and free invoices aren't sent. The first order of a subscription is an order and is sent as one; a
+subscription invoice is never confused with it. Subscription invoices aren't included in **Send to Moneybird** and
+**Send existing orders**; a renewal whose booking failed permanently has to be booked by hand.
+
 ### Refunds
 
 With **Send refunds** on, each successful Swell refund of an order that is in Moneybird becomes:
@@ -79,7 +103,12 @@ reversed in proportion. A refund is never more than the part of the order not re
 Each refund is sent once. The credit invoice's ID is saved as soon as it's created (`moneybird_refunds`, by Swell
 refund ID), and the refund counts as done when it's numbered and paid (`moneybird_refunds_done`). If a later step fails
 temporarily, Swell runs the refund event again and the app finishes that credit invoice instead of creating another; a
-payment an earlier run registered isn't registered twice. Refunds of payments without an order aren't sent.
+payment an earlier run registered isn't registered twice.
+
+A refund of a subscription invoice has no order; its payment has the invoice (`payments.invoice_id`), so the app reads
+the refund's payment, then the invoice, and books the credit invoice on it the same way (reference `Refund <refund
+number> of invoice <number>`, or `INV-<number>-R<refund number>`), when **Send subscription invoices** is on. Refunds
+of payments without an order or an invoice aren't sent.
 
 ### Contacts
 
@@ -104,6 +133,8 @@ would fill it with people who never bought anything.
 - **Moneybird tab** on orders: invoice number (the reference for external invoices), state, link to Moneybird, when
   the payment was registered, refunded total, credit invoices, note and the last error. The order list has a
   **Moneybird** column with the invoice number.
+- **Moneybird section** on subscription invoices with the same fields (zone `content`, as the invoice page has no
+  tabs).
 - **Moneybird tab** on customers with a link to the contact.
 - **Send to Moneybird** in an order's Actions menu and as a bulk action on up to 10 selected orders: sends paid
   orders that aren't in Moneybird yet and finishes the ones that stopped halfway. Selecting more shows "Select up to
@@ -161,6 +192,7 @@ minute, doubling).
 | `administration_id`     | text   |                 | Needed to send. Empty: **Test connection** finds it.                                          |
 | `enabled`               | toggle | on              | Turns off everything the app sends.                                                           |
 | `invoice_type`          | select | `sales_invoice` | `sales_invoice` or `external_sales_invoice`.                                                  |
+| `send_invoices`         | toggle | on              | Book paid subscription invoices, and their refunds.                                          |
 | `finalize`              | select | `manual`        | Sales and credit invoices: `manual` (mark as sent), `email`, `draft`.                         |
 | `workflow_id`           | text   |                 | Sales invoices: Moneybird workflow; empty uses the default.                                  |
 | `document_style_id`     | text   |                 | Sales invoices: document style; empty uses the default.                                      |
@@ -212,7 +244,8 @@ add the …").
 
 ## Limits and known behavior
 
-- **Only paid orders** – orders are sent when they're paid; unpaid, draft and free orders aren't.
+- **Only paid orders** – orders are sent when they're paid; unpaid, draft and free orders aren't. Subscription
+  invoices are sent when a payment on them succeeds; void, unpaid and free invoices aren't.
 - **Canceled orders** – canceling an order doesn't change its invoice. Refund it in Swell to book a credit invoice.
 - **Tax rates** – a line's rate is matched by percentage among the administration's active sales tax rates (all
   pages). Create the missing rates in Moneybird, or set a default tax rate; the order's note lists the percentages

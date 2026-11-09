@@ -39,6 +39,7 @@ export interface MoneybirdSettings {
   payment_without_proof: boolean;
   financial_account_id: string;
   send_refunds: boolean;
+  send_invoices: boolean;
   sync_contacts: boolean;
 }
 
@@ -63,6 +64,7 @@ export function getSettings(all: any): MoneybirdSettings {
     payment_without_proof: flag(raw.payment_without_proof, false),
     financial_account_id: text(raw.financial_account_id),
     send_refunds: flag(raw.send_refunds, true),
+    send_invoices: flag(raw.send_invoices, true),
     sync_contacts: flag(raw.sync_contacts, true),
   };
 }
@@ -298,7 +300,12 @@ export function adminUrlOf(store?: { id?: string; admin_url?: string } | null, e
 
 // the order's page in the Swell dashboard, or undefined without a dashboard address
 export function orderUrl(adminUrl: string | undefined, orderId: string): string | undefined {
-  return adminUrl ? `${adminUrl.replace(/\/+$/, '')}/orders/${orderId}` : undefined;
+  return documentUrl(adminUrl, 'order', orderId);
+}
+
+// the page of an order or a subscription invoice in the Swell dashboard, or undefined without a dashboard address
+export function documentUrl(adminUrl: string | undefined, kind: 'order' | 'invoice', id: string): string | undefined {
+  return adminUrl ? `${adminUrl.replace(/\/+$/, '')}/${kind === 'invoice' ? 'invoices' : 'orders'}/${id}` : undefined;
 }
 
 export function webUrl(settings: Pick<MoneybirdSettings, 'administration_id'>, kind: 'sales_invoices' | 'external_sales_invoices' | 'contacts', id: string) {
