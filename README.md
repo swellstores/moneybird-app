@@ -158,7 +158,7 @@ minute, doubling).
 | Setting                 | Type   | Default         | Description                                                                                   |
 | ----------------------- | ------ | --------------- | --------------------------------------------------------------------------------------------- |
 | `api_token`             | secret |                 | Required. Personal API token with access to sales invoices and settings.                     |
-| `administration_id`     | text   |                 | Needed to send. Empty: **Test connection** finds it.                                          |
+| `administration_id`     | text   |                 | Required. The number after moneybird.com/ in your Moneybird address.                          |
 | `enabled`               | toggle | on              | Turns off everything the app sends.                                                           |
 | `invoice_type`          | select | `sales_invoice` | `sales_invoice` or `external_sales_invoice`.                                                  |
 | `finalize`              | select | `manual`        | Sales and credit invoices: `manual` (mark as sent), `email`, `draft`.                         |
@@ -202,13 +202,13 @@ add the …").
 
 1. In Moneybird open **Settings → Integrations → External applications → New API token**, give it access to
    sales invoices and settings, and copy it.
-2. Install the app, open **Apps → Moneybird → Settings**, paste the token, save, and run **Test connection**.
-3. Copy your administration's ID into **Administration ID**, save, and run **Test connection** again. It lists your
-   sales tax rates and financial accounts.
-4. Choose **Book orders as** and, for sales invoices, what happens to new invoices. Optionally set the workflow,
+2. Install the app, open **Apps → Moneybird → Settings**, paste the token and your **Administration ID** (the number
+   after moneybird.com/ in your Moneybird address), save, and run **Test connection**. It lists your sales tax rates
+   and financial accounts.
+3. Choose **Book orders as** and, for sales invoices, what happens to new invoices. Optionally set the workflow,
    document style, default tax rate, revenue ledger account and financial account.
-5. Place and pay a test order, and open its **Moneybird** tab.
-6. To send earlier orders, run **Actions → Send existing orders**.
+4. Place and pay a test order, and open its **Moneybird** tab.
+5. To send earlier orders, run **Actions → Send existing orders**.
 
 ## Limits and known behavior
 

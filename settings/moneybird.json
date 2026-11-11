@@ -57,8 +57,9 @@
       "id": "administration_id",
       "label": "Administration ID",
       "type": "short_text",
+      "required": true,
       "placeholder": "123456789012345678",
-      "description": "The number after moneybird.com/ in your Moneybird address. Leave empty and run Test connection to find it."
+      "description": "The number after moneybird.com/ in your Moneybird address. Test connection lists the administrations the API token can use."
     },
     {
       "id": "enabled",
