@@ -1,17 +1,19 @@
 import {
   APP_ID, MoneybirdError, adminUrlOf, connectionError, getSettings, missingSettings, salesTaxRates, stopReason, type SwellClient,
 } from './lib/moneybird';
-import { ORDER_EXPAND, syncOrder } from './lib/invoices';
+import { ORDER_EXPAND, isTemporary, syncOrder } from './lib/invoices';
 
-// started by the start-import action, which passes the environment (workflows get no Swell-Env header) and the period
-export const config = {
+// Run by the Send existing orders action, with the modal's period in req.data.days. The action starting the workflow
+// itself lets the dashboard follow the run: it shows it as running, blocks a second run, and reports how it ended.
+export const config: SwellConfig = {
   kind: 'workflow',
   description: 'Send paid orders of the last days to Moneybird',
+  action: true,
 };
 
-// "test" when start-import ran in the test environment; only trusted from a run a function started
-export function runEnv(req: SwellWorkflowRequest): 'test' | null {
-  return req.workflow?.trigger === 'function' && (req.data as any)?.env === 'test' ? 'test' : null;
+// "test" when the run belongs to the test environment (req.environmentId, set by the platform)
+export function runEnv(req: Pick<SwellWorkflowRequest, 'environmentId'>): 'test' | null {
+  return req.environmentId === 'test' ? 'test' : null;
 }
 
 // small pages: each order takes several calls and Moneybird allows 150 calls in 5 minutes
@@ -97,7 +99,7 @@ export default class ImportOrders {
     }
 
     const appId = req.appId || APP_ID;
-    // workflows get only the store id, so the dashboard address for order links is built from it
+    // a workflow may get only the store id, so the dashboard address for order links can be built from it
     const env = runEnv(req);
     const adminUrl = adminUrlOf(req.store, env);
     let totals = emptyStats();
@@ -124,7 +126,7 @@ export default class ImportOrders {
             const result = await syncOrder(req.swell, settings, order, { appId, adminUrl, env, taxRates });
             if (result.status === 'failed') {
               // a temporary error throws so step.do runs the page again later
-              if (result.retry && result.error instanceof MoneybirdError && result.error.retryable) throw result.error;
+              if (isTemporary(result)) throw (result as { error: unknown }).error;
               // a rejected token or plan limit fails every order: stop the run
               if (result.error instanceof MoneybirdError && [401, 402, 403].includes(result.error.status)) throw result.error;
               console.error(`Moneybird: order ${order.number} not sent - ${result.reason}`);

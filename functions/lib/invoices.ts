@@ -1,6 +1,7 @@
 import {
   APP_ID,
   MoneybirdError,
+  SwellReadError,
   appData,
   appValues,
   connectionError,
@@ -264,14 +265,36 @@ export function orderReference(order: any, env?: 'test' | null) {
   return `${env === 'test' ? 'Test order' : 'Order'} ${order.number}`;
 }
 
+// Every document made in the test environment gets "Test" in its reference, so in an administration shared with live
+// it stands apart from live documents (and a test order never matches a live one with the same number).
+export function documentReference(type: string, order: any, env?: 'test' | null) {
+  if (type === 'sales_invoice') return orderReference(order, env);
+  return `${env === 'test' ? 'Test ' : ''}${order.number}`;
+}
+
+export function refundReference(type: string, order: any, refund: { id: string; number?: string }, env?: 'test' | null) {
+  const test = env === 'test';
+  if (type === 'sales_invoice') {
+    // "Refund 2 of order 100546", in test "Test refund 2 of order 100546"
+    const label = `${test ? 'Test refund' : 'Refund'}${refund.number ? ` ${refund.number}` : ''}`;
+    return `${label} of order ${order.number}`;
+  }
+  return `${test ? 'Test ' : ''}${order.number}-R${refund.number || String(refund.id).slice(-6)}`;
+}
+
 // the day of the order's last successful Swell payment, the same on every retry; the order date when it has none
 export async function paymentDay(swell: Pick<SwellClient, 'get'>, order: any): Promise<string> {
-  const found = await swell.get('/payments', {
-    where: { order_id: order.id, success: true },
-    sort: 'date_created desc',
-    limit: 1,
-    fields: 'date_created',
-  });
+  let found: any;
+  try {
+    found = await swell.get('/payments', {
+      where: { order_id: order.id, success: true },
+      sort: 'date_created desc',
+      limit: 1,
+      fields: 'date_created',
+    });
+  } catch (err) {
+    throw new SwellReadError("the order's payments", err);
+  }
   const paidAt = found?.results?.[0]?.date_created;
   return day(paidAt || order.date_created);
 }
@@ -409,7 +432,7 @@ export async function syncOrder(swell: SwellClient, settings: MoneybirdSettings,
       const { details, unmatched } = detailsAttributes(orderLines(order), rates, typed, order.billing?.country || order.shipping?.country);
       const invoice = await createDocument(typed, {
         contactId,
-        reference: type === 'sales_invoice' ? orderReference(order, options.env) : String(order.number),
+        reference: documentReference(type, order, options.env),
         date: day(order.date_created),
         currency: order.currency,
         inclTax: Boolean(order.item_tax_included),
@@ -545,7 +568,7 @@ export async function syncRefund(
       const { details } = detailsAttributes(refundLines(order, amount), rates, typed, order.billing?.country || order.shipping?.country);
       invoice = await createDocument(typed, {
         contactId,
-        reference: type === 'sales_invoice' ? `${label} of order ${order.number}` : `${order.number}-R${refund.number || refundId.slice(-6)}`,
+        reference: refundReference(type, order, { id: refundId, number: refund.number }, options.env),
         date: day(refund.date_created),
         currency: order.currency,
         inclTax: Boolean(order.item_tax_included),
@@ -599,12 +622,17 @@ function notProcessed(err: unknown): boolean {
   return err instanceof MoneybirdError && err.status === 429;
 }
 
-// network errors, rate limits and outages are rethrown so Swell runs the event again; that's safe
+// network errors, rate limits, outages and failed Swell reads are rethrown so Swell runs the event again; that's safe
 // because each finished step is saved on the order and skipped next time
 export function retryIfTemporary(result: SyncResult) {
-  if (result.status === 'failed' && result.retry && result.error instanceof MoneybirdError && result.error.retryable) {
-    throw result.error;
-  }
+  if (isTemporary(result)) throw (result as { error: unknown }).error;
+}
+
+// a failed result that running again can fix: a Moneybird outage or rate limit, or a failed Swell read
+export function isTemporary(result: SyncResult): boolean {
+  if (result.status !== 'failed' || !result.retry) return false;
+  const err = result.error;
+  return err instanceof SwellReadError || (err instanceof MoneybirdError && err.retryable);
 }
 
 export function logResult(what: string, result: SyncResult) {

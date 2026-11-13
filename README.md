@@ -33,7 +33,8 @@ When an order is paid (`order.paid`), and it isn't a draft and its total is abov
      app looks for an invoice with that reference (`find_by_reference`), so an invoice created by a run whose result
      wasn't saved is reused. Test orders have their own reference, so a test order never takes over the invoice of a
      live order with the same number when both environments use one administration.
-   - *External sales invoices*: `POST /external_sales_invoices` with the order number as reference, source `Swell`
+   - *External sales invoices*: `POST /external_sales_invoices` with the order number as reference (`Test <number>`
+     in the test environment), source `Swell`
      and a link back to the order in the Swell dashboard (`source_url`, `…/admin/orders/<id>`, or
      `…/admin/test/orders/<id>` in the test environment).
 3. **Number** – a new sales invoice is a draft without a number. With **New sales invoices** set to *Mark as sent*
@@ -66,10 +67,12 @@ grand total.
 
 With **Send refunds** on, each successful Swell refund of an order that is in Moneybird becomes:
 
-- a credit sales invoice (reference `Refund <refund number> of order <number>`, dated on the refund) for sales
+- a credit sales invoice (reference `Refund <refund number> of order <number>`, `Test refund …` in the test
+  environment, dated on the refund) for sales
   invoices; **New sales invoices** applies to it like to invoices, and with **Register payments** on it gets a negative
   payment; or
-- a negative external sales invoice (reference `<order number>-R<refund number>`) for external invoices, with a
+- a negative external sales invoice (reference `<order number>-R<refund number>`, `Test <order number>-R…` in the
+  test environment) for external invoices, with a
   negative payment when **Register payments** is on.
 
 The type is the one the order's invoice was created as. Its lines are the refunded share of the order, one per tax
@@ -116,13 +119,14 @@ would fill it with people who never bought anything.
   the time limit for one run was reached; run it again to send the rest". Running it again skips the orders already
   sent. For many orders, use **Send existing orders**: it runs in the background and waits and retries when
   Moneybird's limit is reached.
-- **Send existing orders** in the app's Actions menu: `functions/start-import.ts` checks the settings and starts the
-  `functions/import-orders.ts` workflow with the environment and period (`workflows.create('import-orders', { env,
-  days })`), and answers "Import started. Follow it in the Workflows tab of the app." The workflow sends paid orders
-  placed in the last 7, 30 or 90 days, 10 per page, one order at a time. Refunds made before aren't sent.
+- **Send existing orders** in the app's Actions menu starts the `functions/import-orders.ts` workflow itself
+  (`action: true`), with the modal's period in `req.data.days` and the environment in `req.environmentId`. The
+  dashboard follows the run: it shows it as running, doesn't start a second one while it runs, and says when it
+  finished or failed. The workflow sends paid orders placed in the last 7, 30 or 90 days, 10 per page, one order at a
+  time. Refunds made before aren't sent.
 - **Test connection** (below).
 
-Every problem in **Send to Moneybird**, **Send existing orders** (starting it) and **Test connection** is a red error
+Every problem in **Send to Moneybird** and **Test connection** is a red error
 popup (a `SwellError` with status 400), including unexpected ones such as a failed Swell read ("<action> failed:
 <reason>"). A **Send to Moneybird** run where any order failed is an error too, and its message also lists the orders
 that were sent. Results without failures are a regular message. A running **Send existing orders** import reports
@@ -138,6 +142,7 @@ problems by failing its run.
 | 402                              | "Your Moneybird plan doesn't allow this …" (e.g. the free plan's invoice limit)         |
 | 422                              | "Moneybird refused it: …" with Moneybird's field errors                                  |
 | 429, 5xx, network errors         | Temporary: "… try again later"; the event function throws so Swell runs it again         |
+| A failed Swell read (payments)   | Temporary: "Swell couldn't load … try again later"; retried like a Moneybird outage      |
 | Anything else (e.g. 404)         | "Moneybird request failed: …" with the refused call                                       |
 
 A failure is saved on the order as `moneybird_error` ("Couldn't create the invoice: …", "Couldn't register the
@@ -190,8 +195,8 @@ With **Enabled** off:
 - the event functions return before loading any record or calling Moneybird;
 - **Send to Moneybird** refuses with "The Moneybird app is turned off in its settings.", and one that is running
   sends no more orders ("Stopped before 2 more: the app was turned off in its settings.");
-- **Send existing orders** doesn't start ("Import not started: the Moneybird app is turned off in its settings."),
-  and a running import checks the settings before each order and stops, failing with the totals so far;
+- **Send existing orders** fails its run right away ("Import not started: the Moneybird app is turned off in its
+  settings."), and a running import checks the settings before each order and stops, failing with the totals so far;
 - **Test connection** still works and says the app is off.
 
 Nothing is sent either while the API token or Administration ID is missing: the event functions log an error, and
@@ -218,8 +223,10 @@ add the …").
   pages). Create the missing rates in Moneybird, or set a default tax rate; the order's note lists the percentages
   without a match.
 - **Test and live environments** – each environment sends its own orders. Order links in Moneybird open the order in
-  the environment it came from, and test sales invoices are referenced `Test order <number>`. Test and live can use
-  one administration or separate ones.
+  the environment it came from, and every document from the test environment has `Test` in its reference (`Test
+  order <number>`, `Test <number>`, `Test refund …`). **Use a separate Moneybird administration for the test
+  environment**: in a shared one, test invoices land in the live books and count in its reports and tax returns, and
+  only the reference and the order link tell them apart.
 - **Totals** – Moneybird calculates tax per line, so with prices that exclude tax its total can differ from Swell's by
   a cent; the order's note says so, and the payment registered is Moneybird's unpaid total.
 - **Contacts** are matched by Swell customer ID. A contact created in Moneybird by hand isn't linked unless its
@@ -236,8 +243,7 @@ functions/
   refund-events.ts     # payment.refund.succeeded → credit invoice
   account-events.ts    # account.updated → contact update
   send-to-moneybird.ts # order and bulk action
-  start-import.ts      # settings action: starts the import with the environment and period
-  import-orders.ts     # workflow: paid orders of the last 7/30/90 days
+  import-orders.ts     # workflow started by the Send existing orders action: paid orders of the last 7/30/90 days
   test-connection.ts   # settings action
   lib/
     moneybird.ts       # settings, API client, errors, tax rates
@@ -258,6 +264,9 @@ swell app push                    # use --force after changing only functions/li
 swell inspect functions --app=.
 swell logs --type function -s Moneybird
 ```
+
+Push with Swell CLI 2.9.30 or later: earlier versions don't give workflows `req.environmentId`, so an import started
+in the test environment would link its invoices to the live dashboard and give them live references.
 
 ## License
 

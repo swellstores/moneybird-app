@@ -25,7 +25,6 @@ import accountEvents, { config as accountConfig, isContactChange } from "../../f
 import testConnection, { config as testConfig } from "../../functions/test-connection";
 import sendToMoneybird, { MAX_SELECTION, config as sendConfig } from "../../functions/send-to-moneybird";
 import ImportOrders, { PAGE_SIZE, config as importConfig, parseDays, runEnv } from "../../functions/import-orders";
-import startImport, { config as startConfig } from "../../functions/start-import";
 import { TIME_LIMIT_REASON } from "../../functions/send-to-moneybird";
 
 let logSpy: ReturnType<typeof vi.spyOn>;
@@ -312,9 +311,8 @@ describe("import-orders", () => {
     return { swell, result: new ImportOrders().run(req as any, step) };
   };
 
-  it("is a workflow started by the start-import action, with a period", () => {
-    expect(importConfig).toMatchObject({ kind: "workflow" });
-    expect(importConfig).not.toHaveProperty("action");
+  it("is a workflow the Send existing orders action starts, with a period", () => {
+    expect(importConfig).toMatchObject({ kind: "workflow", action: true });
     expect(parseDays("90")).toBe(90);
     expect(parseDays("5")).toBe(30);
   });
@@ -388,6 +386,20 @@ describe("environments", () => {
     expect(bodyOf(fetchMock, "POST /sales_invoices").sales_invoice.reference).toBe("Test order 100546");
   });
 
+  it("names Swell when reading the payment date fails, and runs order.paid again", async () => {
+    mockMoneybird();
+    const { req, swell } = request({ id: ORDER_ID });
+    const load = swell.get.getMockImplementation()!;
+    swell.get.mockImplementation((path: string, query?: any) =>
+      path === "/payments" ? Promise.reject(new Error("Service unavailable")) : load(path, query));
+    await expect(orderEvents(req)).rejects.toThrow("Swell couldn't load the order's payments (Service unavailable)");
+    expect(swell.put).toHaveBeenCalledWith(orderPath, expect.objectContaining({
+      $app: { moneybird: expect.objectContaining({
+        moneybird_error: "Couldn't register the payment: Swell couldn't load the order's payments (Service unavailable), try again later.",
+      }) },
+    }));
+  });
+
   it("dates the payment on the order's last successful Swell payment, the same on every retry", async () => {
     const fetchMock = mockMoneybird();
     const { req, swell } = request({ id: ORDER_ID }, { payments: [{ date_created: "2026-10-17T22:30:00.000Z" }] });
@@ -398,43 +410,22 @@ describe("environments", () => {
     });
   });
 
-  it("start-import starts the import with the environment and period", async () => {
-    expect(startConfig).toMatchObject({ action: true });
-    const live = request({ days: "90" });
-    expect(await startImport(live.req)).toEqual({ message: "Import started. Follow it in the Workflows tab of the app." });
-    expect(live.swell.workflows.create).toHaveBeenCalledWith("import-orders", { env: null, days: "90" });
-
-    const test = request({}, {}, rawSettings, testEnv);
-    await startImport(test.req);
-    expect(test.swell.workflows.create).toHaveBeenCalledWith("import-orders", { env: "test", days: null });
-  });
-
-  it("start-import refuses when the app is off or not set up, without starting a run", async () => {
-    for (const [settings, message] of [
-      [off, "Import not started: the Moneybird app is turned off in its settings."],
-      [{ api_token: "t" }, "Import not started: add the Administration ID in Apps → Moneybird."],
-    ] as const) {
-      const { req, swell } = request({}, {}, settings);
-      await expectFailure(startImport(req), message);
-      expect(swell.workflows.create).not.toHaveBeenCalled();
-    }
-  });
-
-  it("the import trusts the environment only from a run start-import started, and links to that dashboard", async () => {
-    const run = (trigger: string, data: any) => ({ workflow: { trigger }, data }) as any;
-    expect(runEnv(run("function", { env: "test" }))).toBe("test");
-    expect(runEnv(run("function", { env: "Test" }))).toBeNull();
-    expect(runEnv(run("action", { env: "test" }))).toBeNull();
+  it("the import takes the environment from the run, and links to that dashboard", async () => {
+    expect(runEnv({ environmentId: "test" })).toBe("test");
+    expect(runEnv({ environmentId: null })).toBeNull();
 
     const fetchMock = mockMoneybird();
     const step = { do: vi.fn(async (_name: string, a: any, b?: any) => (typeof a === "function" ? a() : b())) } as any;
-    const { req } = request({ env: "test", days: "7" }, { pages: [[makeOrder()]] }, external);
-    // workflows get only the store id
-    (req as any).workflow = { trigger: "function" };
+    const { req } = request({ days: "7" }, { pages: [[makeOrder()]] }, external);
+    (req as any).environmentId = "test";
+    // a workflow may get only the store id
     (req as any).store = { id: "shop" };
     await new ImportOrders().run(req as any, step);
-    expect(bodyOf(fetchMock, "POST /external_sales_invoices").external_sales_invoice.source_url).toBe(`${STORE_URL}/admin/test/orders/${ORDER_ID}`);
+    const sent = bodyOf(fetchMock, "POST /external_sales_invoices").external_sales_invoice;
+    expect(sent.source_url).toBe(`${STORE_URL}/admin/test/orders/${ORDER_ID}`);
+    expect(sent.reference).toBe("Test 100546");
   });
+
 });
 
 describe("send-to-moneybird time limit", () => {
@@ -477,7 +468,6 @@ describe("red error popups", () => {
       return req;
     };
     await expectFailure(sendToMoneybird(broken()), "Send to Moneybird failed: settings unavailable");
-    await expectFailure(startImport(broken()), "Send existing orders failed: settings unavailable");
     await expectFailure(testConnection(broken()), "Test connection failed: settings unavailable");
   });
 });

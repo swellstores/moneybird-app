@@ -159,6 +159,10 @@ describe("environments and links", () => {
     expect(adminUrlOf({ id: "shop", admin_url: "https://shop.swell.store" }, "test")).toBe("https://shop.swell.store/admin/test");
     expect(adminUrlOf({ id: "shop", admin_url: "https://shop.swell.store/admin/test" }, "test")).toBe("https://shop.swell.store/admin/test");
     expect(adminUrlOf({}, "test")).toBe("");
+    // a store id starting with "admin" is part of the host, not the path
+    expect(adminUrlOf({ id: "adminshop", admin_url: "https://adminshop.swell.store" })).toBe("https://adminshop.swell.store/admin");
+    expect(adminUrlOf({ id: "adminshop" }, "test")).toBe("https://adminshop.swell.store/admin/test");
+    expect(adminUrlOf({ id: "adminshop", admin_url: "https://adminshop.swell.store/admin" }, "test")).toBe("https://adminshop.swell.store/admin/test");
     expect(adminUrlOf(undefined)).toBe("");
     expect(orderUrl("https://shop.swell.store/admin/", "o1")).toBe("https://shop.swell.store/admin/orders/o1");
     expect(orderUrl("", "o1")).toBeUndefined();

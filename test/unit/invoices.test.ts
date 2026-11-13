@@ -2,8 +2,10 @@ import { describe, it, expect, vi, afterEach, beforeEach } from "vitest";
 import {
   contactFields,
   detailsAttributes,
+  documentReference,
   orderLines,
   refundLines,
+  refundReference,
   retryIfTemporary,
   syncOrder,
   syncRefund,
@@ -43,6 +45,24 @@ afterEach(() => {
 
 const orderPath = `/orders/${ORDER_ID}`;
 const withApp = (values: Record<string, any>, overrides: Record<string, any> = {}) => makeOrder({ $app: { moneybird: values }, ...overrides });
+
+describe("references", () => {
+  const order = { number: "100546" };
+
+  it("marks every document made in the test environment with Test", () => {
+    expect(documentReference("sales_invoice", order)).toBe("Order 100546");
+    expect(documentReference("sales_invoice", order, "test")).toBe("Test order 100546");
+    expect(documentReference("external_sales_invoice", order)).toBe("100546");
+    expect(documentReference("external_sales_invoice", order, "test")).toBe("Test 100546");
+
+    const refund = { id: "6ad0bd84dfd3c80012092abc", number: "2" };
+    expect(refundReference("sales_invoice", order, refund)).toBe("Refund 2 of order 100546");
+    expect(refundReference("sales_invoice", order, refund, "test")).toBe("Test refund 2 of order 100546");
+    expect(refundReference("sales_invoice", order, { id: refund.id })).toBe("Refund of order 100546");
+    expect(refundReference("external_sales_invoice", order, refund)).toBe("100546-R2");
+    expect(refundReference("external_sales_invoice", order, { id: refund.id }, "test")).toBe("Test 100546-R092abc");
+  });
+});
 
 describe("lines", () => {
   it("lists items and shipping in the order's price basis with Swell's tax percentage", () => {
