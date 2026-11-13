@@ -158,10 +158,16 @@ export default class ImportOrders {
       }
     }
 
-    // a run where Moneybird refused every order it tried shouldn't look successful
+    // Any failed order fails the run, like in Send to Moneybird: the dashboard shows a completed run as a regular
+    // "finished" notice and a failed one as a red error popup with this message
     if (totals.failed && !totals.sent && !totals.updated) {
       throw new Error(
         `Import finished, but Moneybird refused all ${totals.failed} orders it was sent; the reasons are on each order's Moneybird tab. Totals: ${totalsText(totals)}.`,
+      );
+    }
+    if (totals.failed) {
+      throw new Error(
+        `Import finished, but ${totals.failed} order${totals.failed === 1 ? '' : 's'} failed; the reasons are on each order's Moneybird tab. Totals: ${totalsText(totals)}.`,
       );
     }
     console.log(`Moneybird: import of the last ${check.days} days finished: ${totalsText(totals)}`);

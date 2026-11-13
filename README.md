@@ -129,8 +129,11 @@ would fill it with people who never bought anything.
 Every problem in **Send to Moneybird** and **Test connection** is a red error
 popup (a `SwellError` with status 400), including unexpected ones such as a failed Swell read ("<action> failed:
 <reason>"). A **Send to Moneybird** run where any order failed is an error too, and its message also lists the orders
-that were sent. Results without failures are a regular message. A running **Send existing orders** import reports
-problems by failing its run.
+that were sent. Results without failures are a regular message. **Send existing orders** reports problems by failing
+its run, which the dashboard shows as a red error popup ("Send existing orders" failed: …): when the app is off or
+not set up, when Moneybird rejects the token or plan, when a page keeps failing, and when any order failed ("Import
+finished, but 2 orders failed; the reasons are on each order's Moneybird tab. Totals: …"). A run without failures
+shows the regular "finished" notice.
 
 ### Errors and retries
 

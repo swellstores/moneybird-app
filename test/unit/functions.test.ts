@@ -12,6 +12,7 @@ import {
   bodyOf,
   callKeys,
   fail,
+  makeInvoice,
   makeOrder,
   makeSwell,
   mockMoneybird,
@@ -348,6 +349,18 @@ describe("import-orders", () => {
       "Import stopped: the app was turned off in its settings. Before stopping: sent 1, finished 0, already in Moneybird 0, skipped 0, failed 0.",
     );
     expect(callKeys(fetchMock).filter((k) => k === "POST /sales_invoices")).toHaveLength(1);
+  });
+
+  it("fails the run when any order failed, so the dashboard shows a red error popup", async () => {
+    // the first order's invoice is created, the second one's is refused
+    mockMoneybird({
+      "GET /sales_invoices/find_by_reference/Order%20100547": fail(404, "record not found"),
+      "POST /sales_invoices": [ok(makeInvoice(), 201), fail(422, "contact is invalid")],
+    });
+    const second = makeOrder({ id: "6ad0bd84dfd3c8001209251a", number: "100547" });
+    await expect(run({ pages: [[makeOrder(), second]] }).result).rejects.toThrow(
+      "Import finished, but 1 order failed; the reasons are on each order's Moneybird tab. Totals: sent 1, finished 0, already in Moneybird 0, skipped 0, failed 1.",
+    );
   });
 
   it("fails when Moneybird refused every order, and on a rejected token", async () => {
