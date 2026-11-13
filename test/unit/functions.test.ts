@@ -279,7 +279,7 @@ describe("send-to-moneybird", () => {
   it("stops at a rejected token", async () => {
     mockMoneybird({ "GET /sales_invoices/find_by_reference/Order%20100546": fail(401, "invalid token") });
     const orders = [makeOrder(), makeOrder({ number: "100547" })];
-    await expectFailure(sendToMoneybird(request(action({ source: "bulk", selection: { query: {} } }), { orders }).req), /Failed: 100546: Couldn't create the invoice: Moneybird rejected the API token.* Stopped before 1 more\.$/);
+    await expectFailure(sendToMoneybird(request(action({ source: "bulk", selection: { query: {} } }), { orders }).req), /Failed: 100546: Couldn't look for an existing invoice: Moneybird rejected the API token.* Stopped before 1 more\.$/);
   });
 
   it("sends nothing more once the app is turned off during the action", async () => {

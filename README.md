@@ -150,8 +150,10 @@ shows the regular "finished" notice.
 
 A failure is saved on the order as `moneybird_error` ("Couldn't create the invoice: …", "Couldn't register the
 payment: …") and cleared by the next successful step. Event functions rethrow temporary errors only when running again
-can't create a second document: an external invoice or credit invoice whose creation failed with a 5xx or network error
-isn't retried, because Moneybird can't look it up. Check Moneybird, then use **Send to Moneybird** for an order; a
+can't create a second document: an external invoice or credit invoice whose creation call failed with a 5xx or network
+error isn't retried, because Moneybird can't look it up. Failures before that call (finding or creating the contact,
+loading the tax rates: "Couldn't find or create the contact: …", "Couldn't load the tax rates: …") are retried, since
+nothing was created yet. Check Moneybird, then use **Send to Moneybird** for an order; a
 refund in that state has to be booked by hand. The customer-contact update is retried on temporary errors too. Saving a
 result on the order is only logged when it fails.
 
@@ -225,8 +227,8 @@ add the …").
 - **Tax rates** – a line's rate is matched by percentage among the administration's active sales tax rates (all
   pages). Create the missing rates in Moneybird, or set a default tax rate; the order's note lists the percentages
   without a match.
-- **Test and live environments** – each environment sends its own orders. Order links in Moneybird open the order in
-  the environment it came from, and every document from the test environment has `Test` in its reference (`Test
+- **Test and live environments** – each environment sends its own orders. The order links on external sales invoices
+  open the order in the environment it came from, and every document from the test environment has `Test` in its reference (`Test
   order <number>`, `Test <number>`, `Test refund …`). **Use a separate Moneybird administration for the test
   environment**: in a shared one, test invoices land in the live books and count in its reports and tax returns, and
   only the reference and the order link tell them apart.

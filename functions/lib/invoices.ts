@@ -412,7 +412,9 @@ export async function syncOrder(swell: SwellClient, settings: MoneybirdSettings,
   let invoiceId: string = saved.moneybird_invoice_id || '';
   let state: string = saved.moneybird_state || '';
   const done: string[] = [];
-  const step = { name: 'create the invoice' };
+  // The step a failure is reported under. Only a failure in the step "create the invoice" can leave a document behind,
+  // so the calls before it (lookup, contact, tax rates) have their own steps and their temporary errors are retried.
+  const step = { name: 'look for an existing invoice' };
 
   try {
     if (!invoiceId && type === 'sales_invoice') {
@@ -426,10 +428,13 @@ export async function syncOrder(swell: SwellClient, settings: MoneybirdSettings,
     }
 
     if (!invoiceId) {
+      step.name = 'find or create the contact';
       const contact = await ensureContact(swell, typed, order, appId);
       const contactId = contact.id;
+      step.name = 'load the tax rates';
       const rates = options.taxRates ?? (await salesTaxRates(typed));
       const { details, unmatched } = detailsAttributes(orderLines(order), rates, typed, order.billing?.country || order.shipping?.country);
+      step.name = 'create the invoice';
       const invoice = await createDocument(typed, {
         contactId,
         reference: documentReference(type, order, options.env),
@@ -563,9 +568,13 @@ export async function syncRefund(
       step.name = 'finish the credit invoice';
       invoice = await moneybirdRequest(typed, 'GET', `/${invoiceKind(type)}/${existingId}`);
     } else {
+      // as in syncOrder, only the step "create the credit invoice" can leave a document behind
+      step.name = 'find or create the contact';
       const { id: contactId } = await ensureContact(swell, typed, order, appId);
+      step.name = 'load the tax rates';
       const rates = options.taxRates ?? (await salesTaxRates(typed));
       const { details } = detailsAttributes(refundLines(order, amount), rates, typed, order.billing?.country || order.shipping?.country);
+      step.name = 'create the credit invoice';
       invoice = await createDocument(typed, {
         contactId,
         reference: refundReference(type, order, { id: refundId, number: refund.number }, options.env),
@@ -581,7 +590,7 @@ export async function syncRefund(
     const creditId = String(invoice.id ?? existingId);
 
     if (type === 'sales_invoice' && invoice.state === 'draft' && settings.finalize !== 'draft') {
-      step.name = 'mark the credit invoice as sent';
+      step.name = settings.finalize === 'email' ? 'email the credit invoice' : 'mark the credit invoice as sent';
       invoice = await finalizeInvoice(typed, creditId);
     }
     if (settings.register_payments && invoice.state !== 'draft') {

@@ -333,6 +333,37 @@ describe("syncOrder", () => {
   });
 });
 
+describe("retries before a document is created", () => {
+  const external = () => makeSettings({ invoice_type: "external_sales_invoice" });
+
+  it("retries an external invoice whose contact lookup or tax rates failed, as nothing was created yet", async () => {
+    let fetchMock = mockMoneybird({ [`GET /contacts/customer_id/${ACCOUNT_ID}`]: fail(503, "unavailable") });
+    let result = await syncOrder(makeSwell() as any, external(), makeOrder());
+    expect(result).toMatchObject({ status: "failed", retry: true, reason: expect.stringMatching(/^Couldn't find or create the contact: /) });
+    expect(() => retryIfTemporary(result)).toThrow(MoneybirdError);
+    expect(callKeys(fetchMock)).not.toContain("POST /external_sales_invoices");
+
+    vi.restoreAllMocks();
+    fetchMock = mockMoneybird({ "GET /tax_rates": fail(503, "unavailable") });
+    result = await syncOrder(makeSwell() as any, external(), makeOrder());
+    expect(result).toMatchObject({ status: "failed", retry: true, reason: expect.stringMatching(/^Couldn't load the tax rates: /) });
+    expect(callKeys(fetchMock)).not.toContain("POST /external_sales_invoices");
+  });
+
+  it("retries a refund whose tax rates failed, but not one whose credit invoice may have been created", async () => {
+    const refund = { id: REFUND_ID, amount: 10, number: "100015" };
+    const order = withApp({ moneybird_invoice_id: INVOICE_ID, moneybird_invoice_type: "sales_invoice" });
+    mockMoneybird({ "GET /tax_rates": fail(503, "unavailable") });
+    const before = await syncRefund(makeSwell() as any, makeSettings(), order, refund);
+    expect(before).toMatchObject({ status: "failed", retry: true, reason: expect.stringContaining("couldn't load the tax rates") });
+
+    vi.restoreAllMocks();
+    mockMoneybird({ "POST /sales_invoices": fail(502, "bad gateway") });
+    const creating = await syncRefund(makeSwell() as any, makeSettings(), order, refund);
+    expect(creating).toMatchObject({ status: "failed", retry: false, reason: expect.stringContaining("couldn't create the credit invoice") });
+  });
+});
+
 describe("syncRefund", () => {
   const refund = { id: REFUND_ID, amount: 10, number: "100015", date_created: "2026-10-16T08:00:00.000Z" };
   const sent = (values: Record<string, any> = {}) => withApp({ moneybird_invoice_id: INVOICE_ID, moneybird_invoice_type: "sales_invoice", ...values });
