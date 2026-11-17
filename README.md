@@ -38,7 +38,12 @@ When an order is paid (`order.paid`), and it isn't a draft and its total is abov
    - *External sales invoices*: `POST /external_sales_invoices` with the order number as reference (`Test <number>`
      in the test environment), source `Swell`
      and a link back to the order in the Swell dashboard (`source_url`, `…/admin/orders/<id>`, or
-     `…/admin/test/orders/<id>` in the test environment).
+     `…/admin/test/orders/<id>` in the test environment). External invoices have no `find_by_reference`, so before
+     creating, the app searches the administration's external invoices (`query`, with `state:all` so the default
+     this-year limit doesn't hide an older one) and reuses the invoice whose reference is exactly that string. A
+     search hit that only contains the number is left alone, and a test order never takes the invoice of a live
+     order with the same number. When Moneybird refuses the create because the reference is already taken, that
+     invoice is taken over too.
 3. **Number** – a new sales invoice is a draft without a number. With **New sales invoices** set to *Mark as sent*
    (default) the app sends it with `delivery_method: Manual` (no email); with *Email to the customer* Moneybird
    emails it; with *Leave as draft* it stays a draft and the payment isn't registered.
@@ -99,7 +104,8 @@ With **Send refunds** on, each successful Swell refund of an order that is in Mo
   payment; or
 - a negative external sales invoice (reference `<order number>-R<refund number>`, `Test <order number>-R…` in the
   test environment) for external invoices, with a
-  negative payment when **Register payments** is on.
+  negative payment when **Register payments** is on. Before creating it, the app looks for an external invoice
+  with that reference, the same way as for orders, and reuses it.
 
 The type is the one the order's invoice was created as. Its lines are the refunded share of the order, one per tax
 percentage (`Refund of order <number>`, with `(21% tax)` added when the order has several percentages), so the tax is
@@ -176,12 +182,13 @@ shows the regular "finished" notice.
 
 A failure is saved on the order as `moneybird_error` ("Couldn't create the invoice: …", "Couldn't register the
 payment: …") and cleared by the next successful step. Event functions rethrow temporary errors only when running again
-can't create a second document: an external invoice or credit invoice whose creation call failed with a 5xx or network
-error isn't retried, because Moneybird can't look it up. Failures before that call (finding or creating the contact,
-loading the tax rates: "Couldn't find or create the contact: …", "Couldn't load the tax rates: …") are retried, since
-nothing was created yet. Check Moneybird, then use **Send to Moneybird** for an order; a
-refund in that state has to be booked by hand. The customer-contact update is retried on temporary errors too. Saving a
-result on the order is only logged when it fails.
+can't create a second document. A sales invoice, an external invoice and an external credit invoice are found by their
+reference on the next run, so a create call that failed with a 5xx or network error is retried. A sales credit invoice
+isn't: Moneybird can't look it up, so that create is retried only when Moneybird refused it before doing anything
+(429). Failures before the create call (finding or creating the contact, loading the tax rates: "Couldn't find or
+create the contact: …", "Couldn't load the tax rates: …") are retried, since nothing was created yet. Check Moneybird,
+then use **Send to Moneybird** for an order; a sales credit invoice left in that state has to be booked by hand. The
+customer-contact update is retried on temporary errors too. Saving a result on the order is only logged when it fails.
 
 Moneybird allows 150 requests per 5 minutes. Sending an order takes 5–9 requests (fewer in the actions, which load
 the tax rates once), so the import goes one order at a time and retries a page that hits the limit (6 times, from 1

@@ -339,22 +339,31 @@ interface DocumentInput {
   sourceUrl?: string;
 }
 
-// create a sales invoice (a draft) or an external sales invoice (open)
+// create a sales invoice (a draft) or an external sales invoice (open).
+// Moneybird refuses a second external invoice with a reference that already exists. That happens when the
+// create call succeeded but the response was lost; the invoice is then taken over instead of failing the order.
 async function createDocument(settings: MoneybirdSettings, input: DocumentInput): Promise<any> {
   if (settings.invoice_type === 'external_sales_invoice') {
-    return moneybirdRequest(settings, 'POST', '/external_sales_invoices', {
-      external_sales_invoice: clean({
-        contact_id: input.contactId,
-        reference: input.reference,
-        date: input.date,
-        due_date: input.dueDate,
-        currency: input.currency,
-        prices_are_incl_tax: input.inclTax,
-        source: SOURCE,
-        source_url: input.sourceUrl,
-        details_attributes: input.details,
-      }),
-    });
+    try {
+      return await moneybirdRequest(settings, 'POST', '/external_sales_invoices', {
+        external_sales_invoice: clean({
+          contact_id: input.contactId,
+          reference: input.reference,
+          date: input.date,
+          due_date: input.dueDate,
+          currency: input.currency,
+          prices_are_incl_tax: input.inclTax,
+          source: SOURCE,
+          source_url: input.sourceUrl,
+          details_attributes: input.details,
+        }),
+      });
+    } catch (err) {
+      if (!referenceTaken(err)) throw err;
+      const found = await findExternalByReference(settings, input.reference);
+      if (found?.id) return found;
+      throw err;
+    }
   }
   return moneybirdRequest(settings, 'POST', '/sales_invoices', {
     sales_invoice: clean({
@@ -450,8 +459,8 @@ export async function syncOrder(swell: SwellClient, settings: MoneybirdSettings,
   const step = { name: 'look for an existing invoice' };
 
   try {
-    if (!invoiceId && type === 'sales_invoice') {
-      // an invoice made by an earlier run whose result wasn't saved
+    if (!invoiceId) {
+      // an invoice made by an earlier run whose result wasn't saved, or one the store already booked
       const found = await findByReference(typed, documentReference(type, order, options.env));
       if (found?.id) {
         invoiceId = String(found.id);
@@ -517,9 +526,8 @@ export async function syncOrder(swell: SwellClient, settings: MoneybirdSettings,
   } catch (err) {
     const message = `Couldn't ${step.name}: ${connectionError(err)}`;
     await saveValues(swell, path, { moneybird_error: message }, appId);
-    // a sales invoice made by a failed call is found by its reference next time; an external one isn't
-    const creating = step.name === 'create the invoice' && !invoiceId && type === 'external_sales_invoice';
-    return { status: 'failed', reason: message, error: err, retry: !creating || notProcessed(err) };
+    // a failed create is safe to run again: the next run finds the invoice by its reference, for both kinds
+    return { status: 'failed', reason: message, error: err, retry: true };
   }
 
   if (!done.length) {
@@ -529,7 +537,15 @@ export async function syncOrder(swell: SwellClient, settings: MoneybirdSettings,
   return done.includes('created') ? { status: 'sent', invoice_id: invoiceId, done } : { status: 'updated', invoice_id: invoiceId, done };
 }
 
+// Moneybird lists at most 100 external invoices per page. A reference search is a handful of hits; the cap
+// only stops a search that never ends, and then nothing is created.
+const EXTERNAL_PAGE_SIZE = 100;
+const MAX_EXTERNAL_PAGES = 10;
+
 async function findByReference(settings: MoneybirdSettings, reference: string): Promise<any | null> {
+  if (settings.invoice_type === 'external_sales_invoice') {
+    return findExternalByReference(settings, reference);
+  }
   try {
     return await moneybirdRequest(settings, 'GET', `/sales_invoices/find_by_reference/${encodeURIComponent(reference)}`);
   } catch (err) {
@@ -538,6 +554,33 @@ async function findByReference(settings: MoneybirdSettings, reference: string): 
     }
     throw err;
   }
+}
+
+// External sales invoices have no find_by_reference. `query` is the administration's search, and the default
+// list is only this year, so state:all is sent with it. The invoice whose reference is exactly this string is
+// kept; a hit that merely contains the number (the order's credit invoice, a test invoice) is not.
+async function findExternalByReference(settings: MoneybirdSettings, reference: string): Promise<any | null> {
+  for (let page = 1; page <= MAX_EXTERNAL_PAGES; page++) {
+    const list = await moneybirdRequest(settings, 'GET', '/external_sales_invoices', undefined, {
+      query: { query: reference, filter: 'state:all', per_page: String(EXTERNAL_PAGE_SIZE), page: String(page) },
+    });
+    if (!Array.isArray(list)) {
+      throw new MoneybirdError(502, 'the external invoice list was not a list', 'GET /external_sales_invoices');
+    }
+    const found = list.find((invoice) => invoice?.reference === reference);
+    if (found) return found;
+    if (list.length < EXTERNAL_PAGE_SIZE) return null;
+  }
+  throw new MoneybirdError(
+    503,
+    `no external invoice with reference ${reference} in the first ${MAX_EXTERNAL_PAGES * EXTERNAL_PAGE_SIZE} search results`,
+    'GET /external_sales_invoices',
+  );
+}
+
+// Moneybird: { reference: ["has already been taken"] }
+function referenceTaken(err: unknown): boolean {
+  return err instanceof MoneybirdError && err.status === 422 && /reference/i.test(err.message) && /taken/i.test(err.message);
 }
 
 // the invoice's ID, number, link and state, saved on the order
@@ -646,27 +689,35 @@ export async function syncRefund(
   const label = refund.number ? `Refund ${refund.number}` : 'Refund';
 
   try {
+    const reference = refundReference(type, order, { id: refundId, number: refund.number }, options.env);
     let invoice: any;
     if (existingId) {
       step.name = 'finish the credit invoice';
       invoice = await moneybirdRequest(typed, 'GET', `/${invoiceKind(type)}/${existingId}`);
     } else {
-      // as in syncOrder, only the step "create the credit invoice" can leave a document behind
-      step.name = 'find or create the contact';
-      const { id: contactId } = await ensureContact(swell, typed, order, appId);
-      step.name = 'load the tax rates';
-      const rates = options.taxRates ?? (await salesTaxRates(typed));
-      const { details } = detailsAttributes(refundLines(order, amount), rates, typed, order.billing?.country || order.shipping?.country);
-      step.name = 'create the credit invoice';
-      invoice = await createDocument(typed, {
-        contactId,
-        reference: refundReference(type, order, { id: refundId, number: refund.number }, options.env),
-        date: day(refund.date_created),
-        currency: order.currency,
-        inclTax: Boolean(order.item_tax_included),
-        details,
-        sourceUrl: orderUrl(options.adminUrl, order.id),
-      });
+      // as in syncOrder, only the step "create the credit invoice" can leave a document behind.
+      // An external one is looked up first, so a credit invoice already booked under this reference is reused.
+      if (type === 'external_sales_invoice') {
+        step.name = 'look for an existing credit invoice';
+        invoice = await findByReference(typed, reference);
+      }
+      if (!invoice) {
+        step.name = 'find or create the contact';
+        const { id: contactId } = await ensureContact(swell, typed, order, appId);
+        step.name = 'load the tax rates';
+        const rates = options.taxRates ?? (await salesTaxRates(typed));
+        const { details } = detailsAttributes(refundLines(order, amount), rates, typed, order.billing?.country || order.shipping?.country);
+        step.name = 'create the credit invoice';
+        invoice = await createDocument(typed, {
+          contactId,
+          reference,
+          date: day(refund.date_created),
+          currency: order.currency,
+          inclTax: Boolean(order.item_tax_included),
+          details,
+          sourceUrl: orderUrl(options.adminUrl, order.id),
+        });
+      }
       // saved first, so a retry finishes this credit invoice instead of creating a second one
       await saveValues(swell, path, { moneybird_refunds: { [refundId]: String(invoice.id) } }, appId);
     }
@@ -703,9 +754,11 @@ export async function syncRefund(
   } catch (err) {
     const message = `${label}: couldn't ${step.name}: ${connectionError(err)}`;
     await saveValues(swell, path, { moneybird_error: message }, appId);
-    // a credit invoice made by a failed call can't be found again, so only a refused call is retried;
-    // later steps are retried, and the next run finishes the saved credit invoice
-    return { status: 'failed', reason: message, error: err, retry: step.name !== 'create the credit invoice' || notProcessed(err) };
+    // a sales credit invoice made by a failed call can't be found again, so only a refused call is retried.
+    // An external one is found by its reference next time. Later steps are retried, and the next run finishes
+    // the saved credit invoice.
+    const unfindable = step.name === 'create the credit invoice' && type !== 'external_sales_invoice';
+    return { status: 'failed', reason: message, error: err, retry: !unfindable || notProcessed(err) };
   }
 }
 

@@ -92,6 +92,7 @@ const DEFAULT_ROUTES: Routes = {
   [`PATCH /sales_invoices/${INVOICE_ID}/send_invoice`]: ok(makeInvoice({ state: "open", invoice_id: "2026-0042" })),
   [`GET /sales_invoices/${INVOICE_ID}`]: ok(makeInvoice({ state: "open", invoice_id: "2026-0042" })),
   [`POST /sales_invoices/${INVOICE_ID}/payments`]: ok({ id: "pay_1" }, 201),
+  "GET /external_sales_invoices": ok([]),
   "POST /external_sales_invoices": ok({ id: INVOICE_ID, state: "open", reference: "100546", total_price_incl_tax: "54.45" }, 201),
   [`GET /external_sales_invoices/${INVOICE_ID}`]: ok({ id: INVOICE_ID, state: "open", total_unpaid: "54.45" }),
   [`POST /external_sales_invoices/${INVOICE_ID}/payments`]: ok({ id: "pay_1" }, 201),
