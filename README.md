@@ -275,4 +275,4 @@ in the test environment would link its invoices to the live dashboard and give t
 
 ## License
 
-MIT – see [LICENSE](LICENSE).
+Swell App License. See [LICENSE](LICENSE).
