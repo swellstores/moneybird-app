@@ -38,12 +38,12 @@ When an order is paid (`order.paid`), and it isn't a draft and its total is abov
    - *External sales invoices*: `POST /external_sales_invoices` with the order number as reference (`Test <number>`
      in the test environment), source `Swell`
      and a link back to the order in the Swell dashboard (`source_url`, `…/admin/orders/<id>`, or
-     `…/admin/test/orders/<id>` in the test environment). External invoices have no `find_by_reference`, so before
-     creating, the app searches the administration's external invoices (`query`, with `state:all` so the default
-     this-year limit doesn't hide an older one) and reuses the invoice whose reference is exactly that string. A
-     search hit that only contains the number is left alone, and a test order never takes the invoice of a live
-     order with the same number. When Moneybird refuses the create because the reference is already taken, that
-     invoice is taken over too.
+     `…/admin/test/orders/<id>`      in the test environment). External invoices have no `find_by_reference` and the list has no reference filter,
+     so before creating, the app lists the external invoices dated within seven days of the date it would give the
+     new one (`period` and `state:all`, every page) and reuses the invoice whose reference is exactly that string.
+     The date window keeps the lookup to a few pages. A reference that only contains the number (`100546-R1`,
+     `Test 100546`) doesn't count, so a test order never takes the invoice of a live order with the same number.
+     When Moneybird refuses the create because the reference is already taken, that invoice is taken over too.
 3. **Number** – a new sales invoice is a draft without a number. With **New sales invoices** set to *Mark as sent*
    (default) the app sends it with `delivery_method: Manual` (no email); with *Email to the customer* Moneybird
    emails it; with *Leave as draft* it stays a draft and the payment isn't registered.
@@ -104,8 +104,8 @@ With **Send refunds** on, each successful Swell refund of an order that is in Mo
   payment; or
 - a negative external sales invoice (reference `<order number>-R<refund number>`, `Test <order number>-R…` in the
   test environment) for external invoices, with a
-  negative payment when **Register payments** is on. Before creating it, the app looks for an external invoice
-  with that reference, the same way as for orders, and reuses it.
+  negative payment when **Register payments** is on. Before creating it, the app lists the external invoices
+  dated within seven days of the refund and reuses the one with that reference, the same way as for orders.
 
 The type is the one the order's invoice was created as. Its lines are the refunded share of the order, one per tax
 percentage (`Refund of order <number>`, with `(21% tax)` added when the order has several percentages), so the tax is

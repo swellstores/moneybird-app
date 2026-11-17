@@ -360,7 +360,7 @@ async function createDocument(settings: MoneybirdSettings, input: DocumentInput)
       });
     } catch (err) {
       if (!referenceTaken(err)) throw err;
-      const found = await findExternalByReference(settings, input.reference);
+      const found = await findExternalByReference(settings, input.reference, input.date);
       if (found?.id) return found;
       throw err;
     }
@@ -461,7 +461,7 @@ export async function syncOrder(swell: SwellClient, settings: MoneybirdSettings,
   try {
     if (!invoiceId) {
       // an invoice made by an earlier run whose result wasn't saved, or one the store already booked
-      const found = await findByReference(typed, documentReference(type, order, options.env));
+      const found = await findByReference(typed, documentReference(type, order, options.env), day(order.date_created));
       if (found?.id) {
         invoiceId = String(found.id);
         state = found.state;
@@ -537,14 +537,15 @@ export async function syncOrder(swell: SwellClient, settings: MoneybirdSettings,
   return done.includes('created') ? { status: 'sent', invoice_id: invoiceId, done } : { status: 'updated', invoice_id: invoiceId, done };
 }
 
-// Moneybird lists at most 100 external invoices per page. A reference search is a handful of hits; the cap
-// only stops a search that never ends, and then nothing is created.
+// Moneybird lists at most 100 external invoices per page. The date window is a few pages; the cap only
+// stops a list that never ends, and then nothing is created.
 const EXTERNAL_PAGE_SIZE = 100;
 const MAX_EXTERNAL_PAGES = 10;
+const REFERENCE_WINDOW_DAYS = 7;
 
-async function findByReference(settings: MoneybirdSettings, reference: string): Promise<any | null> {
+async function findByReference(settings: MoneybirdSettings, reference: string, date: string): Promise<any | null> {
   if (settings.invoice_type === 'external_sales_invoice') {
-    return findExternalByReference(settings, reference);
+    return findExternalByReference(settings, reference, date);
   }
   try {
     return await moneybirdRequest(settings, 'GET', `/sales_invoices/find_by_reference/${encodeURIComponent(reference)}`);
@@ -556,13 +557,15 @@ async function findByReference(settings: MoneybirdSettings, reference: string): 
   }
 }
 
-// External sales invoices have no find_by_reference. `query` is the administration's search, and the default
-// list is only this year, so state:all is sent with it. The invoice whose reference is exactly this string is
-// kept; a hit that merely contains the number (the order's credit invoice, a test invoice) is not.
-async function findExternalByReference(settings: MoneybirdSettings, reference: string): Promise<any | null> {
+// External sales invoices have no find_by_reference, and the list has no reference filter. The invoices dated
+// within seven days of this document's date are a few pages. state:all is sent with the period, because a filter
+// replaces the defaults and the default list is only this year. The invoice whose reference is exactly this
+// string is kept; one that only contains the number (100546-R1, Test 100546) is not.
+async function findExternalByReference(settings: MoneybirdSettings, reference: string, date: string): Promise<any | null> {
+  const filter = `period:${referencePeriod(date)},state:all`;
   for (let page = 1; page <= MAX_EXTERNAL_PAGES; page++) {
     const list = await moneybirdRequest(settings, 'GET', '/external_sales_invoices', undefined, {
-      query: { query: reference, filter: 'state:all', per_page: String(EXTERNAL_PAGE_SIZE), page: String(page) },
+      query: { filter, per_page: String(EXTERNAL_PAGE_SIZE), page: String(page) },
     });
     if (!Array.isArray(list)) {
       throw new MoneybirdError(502, 'the external invoice list was not a list', 'GET /external_sales_invoices');
@@ -573,9 +576,19 @@ async function findExternalByReference(settings: MoneybirdSettings, reference: s
   }
   throw new MoneybirdError(
     503,
-    `no external invoice with reference ${reference} in the first ${MAX_EXTERNAL_PAGES * EXTERNAL_PAGE_SIZE} search results`,
+    `no external invoice with reference ${reference} in the first ${MAX_EXTERNAL_PAGES * EXTERNAL_PAGE_SIZE} invoices of its date window`,
     'GET /external_sales_invoices',
   );
+}
+
+// YYYYMMDD..YYYYMMDD, seven days before the document date through seven days after
+function referencePeriod(date: string): string {
+  return `${shiftDay(date, -REFERENCE_WINDOW_DAYS)}..${shiftDay(date, REFERENCE_WINDOW_DAYS)}`;
+}
+
+function shiftDay(isoDate: string, days: number): string {
+  const [year, month, dayOfMonth] = isoDate.split('-').map(Number);
+  return new Date(Date.UTC(year, month - 1, dayOfMonth + days)).toISOString().slice(0, 10).replace(/-/g, '');
 }
 
 // Moneybird: { reference: ["has already been taken"] }
@@ -699,7 +712,7 @@ export async function syncRefund(
       // An external one is looked up first, so a credit invoice already booked under this reference is reused.
       if (type === 'external_sales_invoice') {
         step.name = 'look for an existing credit invoice';
-        invoice = await findByReference(typed, reference);
+        invoice = await findByReference(typed, reference, day(refund.date_created));
       }
       if (!invoice) {
         step.name = 'find or create the contact';

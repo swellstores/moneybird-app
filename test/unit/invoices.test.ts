@@ -260,8 +260,8 @@ describe("syncOrder", () => {
     const result = await syncOrder(swell as any, makeSettings({ invoice_type: "external_sales_invoice" }), makeOrder(), { adminUrl: "https://a/admin" });
     expect(result).toMatchObject({ status: "sent", done: ["created", "payment registered"] });
     expect(callKeys(fetchMock)).not.toContain("GET /sales_invoices/find_by_reference/Order%20100546");
-    expect(externalSearch(fetchMock).get("query")).toBe("100546");
-    expect(externalSearch(fetchMock).get("filter")).toBe("state:all");
+    expect(externalSearch(fetchMock).get("query")).toBeNull();
+    expect(externalSearch(fetchMock).get("filter")).toBe("period:20261008..20261022,state:all");
     expect(bodyOf(fetchMock, "POST /external_sales_invoices").external_sales_invoice).toMatchObject({
       reference: "100546",
       date: "2026-10-15",
@@ -307,8 +307,14 @@ describe("syncOrder", () => {
   it("searches the test reference, so a test order doesn't take a live external invoice", async () => {
     const fetchMock = mockMoneybird();
     await syncOrder(makeSwell() as any, makeSettings({ invoice_type: "external_sales_invoice" }), makeOrder(), { env: "test" });
-    expect(externalSearch(fetchMock).get("query")).toBe("Test 100546");
+    expect(externalSearch(fetchMock).get("filter")).toBe("period:20261008..20261022,state:all");
     expect(bodyOf(fetchMock, "POST /external_sales_invoices").external_sales_invoice.reference).toBe("Test 100546");
+  });
+
+  it("lists the seven days around the invoice date, across a month boundary", async () => {
+    const fetchMock = mockMoneybird();
+    await syncOrder(makeSwell() as any, makeSettings({ invoice_type: "external_sales_invoice" }), makeOrder({ date_created: "2026-01-02T12:00:00.000Z" }));
+    expect(externalSearch(fetchMock).get("filter")).toBe("period:20251226..20260109,state:all");
   });
 
   it("reads the next page of the reference search and reuses a match there", async () => {
@@ -623,7 +629,7 @@ describe("syncRefund", () => {
     });
     const swell = makeSwell();
     await syncRefund(swell as any, makeSettings(), sent({ moneybird_invoice_type: "external_sales_invoice" }), refund);
-    expect(externalSearch(fetchMock).get("query")).toBe("100546-R100015");
+    expect(externalSearch(fetchMock).get("filter")).toBe("period:20261009..20261023,state:all");
     expect(bodyOf(fetchMock, "POST /external_sales_invoices").external_sales_invoice.reference).toBe("100546-R100015");
     expect(savedOn(swell, orderPath).moneybird_credit_invoices).toBe("Refund 100015: external invoice 100546-R100015 (−10.00 EUR)");
   });
