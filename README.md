@@ -43,7 +43,8 @@ When an order is paid (`order.paid`), and it isn't a draft and its total is abov
      new one (`period` and `state:all`, every page) and reuses the invoice whose reference is exactly that string.
      The date window keeps the lookup to a few pages. A reference that only contains the number (`100546-R1`,
      `Test 100546`) doesn't count, so a test order never takes the invoice of a live order with the same number.
-     When Moneybird refuses the create because the reference is already taken, that invoice is taken over too.
+     When the window has more than 1000 external invoices, the app creates the invoice anyway and notes on the
+     order that it couldn't check for an existing one. That run finishes, so the event isn't run again for it.
 3. **Number** – a new sales invoice is a draft without a number. With **New sales invoices** set to *Mark as sent*
    (default) the app sends it with `delivery_method: Manual` (no email); with *Email to the customer* Moneybird
    emails it; with *Leave as draft* it stays a draft and the payment isn't registered.
@@ -67,8 +68,8 @@ rate ID**, else Moneybird's default.
 **Revenue ledger account ID** is set on every line when given. Gift cards and account credit are payments in Swell and
 aren't invoice lines.
 
-The order's **Note** shows tax percentages without a matching rate and a Moneybird total that differs from Swell's
-grand total.
+The order's **Note** shows tax percentages without a matching rate, a Moneybird total that differs from Swell's
+grand total, and a date window that was too long to check for an existing external invoice.
 
 ### Payment terms
 

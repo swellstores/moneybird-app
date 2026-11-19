@@ -132,6 +132,11 @@ export function withoutEmail(fields: Record<string, any>): Record<string, any> {
 export const EMAIL_REFUSED_NOTE =
   "Moneybird refused the customer's email (its domain can't receive mail), so the contact has no invoice email.";
 
+// The date window is read in pages of 100, at most 10. Past that the invoice is created anyway: stopping
+// would book nothing, which is worse than today, and failing the run would make Swell repeat the event.
+export const UNCHECKED_REFERENCE_NOTE =
+  "Couldn't check for an existing external invoice with this reference: its date window has more than 1000. This one was created without that check.";
+
 // find the order's customer in Moneybird, or create the contact; emailRefused when it was created without the email
 export async function ensureContact(
   swell: SwellClient,
@@ -339,31 +344,22 @@ interface DocumentInput {
   sourceUrl?: string;
 }
 
-// create a sales invoice (a draft) or an external sales invoice (open).
-// Moneybird refuses a second external invoice with a reference that already exists. That happens when the
-// create call succeeded but the response was lost; the invoice is then taken over instead of failing the order.
+// create a sales invoice (a draft) or an external sales invoice (open)
 async function createDocument(settings: MoneybirdSettings, input: DocumentInput): Promise<any> {
   if (settings.invoice_type === 'external_sales_invoice') {
-    try {
-      return await moneybirdRequest(settings, 'POST', '/external_sales_invoices', {
-        external_sales_invoice: clean({
-          contact_id: input.contactId,
-          reference: input.reference,
-          date: input.date,
-          due_date: input.dueDate,
-          currency: input.currency,
-          prices_are_incl_tax: input.inclTax,
-          source: SOURCE,
-          source_url: input.sourceUrl,
-          details_attributes: input.details,
-        }),
-      });
-    } catch (err) {
-      if (!referenceTaken(err)) throw err;
-      const found = await findExternalByReference(settings, input.reference, input.date);
-      if (found?.id) return found;
-      throw err;
-    }
+    return moneybirdRequest(settings, 'POST', '/external_sales_invoices', {
+      external_sales_invoice: clean({
+        contact_id: input.contactId,
+        reference: input.reference,
+        date: input.date,
+        due_date: input.dueDate,
+        currency: input.currency,
+        prices_are_incl_tax: input.inclTax,
+        source: SOURCE,
+        source_url: input.sourceUrl,
+        details_attributes: input.details,
+      }),
+    });
   }
   return moneybirdRequest(settings, 'POST', '/sales_invoices', {
     sales_invoice: clean({
@@ -459,13 +455,17 @@ export async function syncOrder(swell: SwellClient, settings: MoneybirdSettings,
   const step = { name: 'look for an existing invoice' };
 
   try {
+    // set when the date window was longer than the pages the app reads; the invoice is created anyway
+    let unchecked = false;
     if (!invoiceId) {
       // an invoice made by an earlier run whose result wasn't saved, or one the store already booked
       const found = await findByReference(typed, documentReference(type, order, options.env), day(order.date_created));
-      if (found?.id) {
-        invoiceId = String(found.id);
-        state = found.state;
-        await saveValues(swell, path, invoiceValues(typed, found), appId);
+      if (found.invoice?.id) {
+        invoiceId = String(found.invoice.id);
+        state = found.invoice.state;
+        await saveValues(swell, path, invoiceValues(typed, found.invoice), appId);
+      } else {
+        unchecked = found.unchecked;
       }
     }
 
@@ -496,7 +496,10 @@ export async function syncOrder(swell: SwellClient, settings: MoneybirdSettings,
         path,
         {
           ...invoiceValues(typed, invoice),
-          moneybird_note: [contact.emailRefused ? EMAIL_REFUSED_NOTE : null, totalNote(order, invoice, unmatched, typed)].filter(Boolean).join(' ') || null,
+          moneybird_note:
+            [unchecked ? UNCHECKED_REFERENCE_NOTE : null, contact.emailRefused ? EMAIL_REFUSED_NOTE : null, totalNote(order, invoice, unmatched, typed)]
+              .filter(Boolean)
+              .join(' ') || null,
         },
         appId,
       );
@@ -537,21 +540,26 @@ export async function syncOrder(swell: SwellClient, settings: MoneybirdSettings,
   return done.includes('created') ? { status: 'sent', invoice_id: invoiceId, done } : { status: 'updated', invoice_id: invoiceId, done };
 }
 
-// Moneybird lists at most 100 external invoices per page. The date window is a few pages; the cap only
-// stops a list that never ends, and then nothing is created.
+// Moneybird lists at most 100 external invoices per page. Past 10 pages the window wasn't fully read.
 const EXTERNAL_PAGE_SIZE = 100;
 const MAX_EXTERNAL_PAGES = 10;
 const REFERENCE_WINDOW_DAYS = 7;
 
-async function findByReference(settings: MoneybirdSettings, reference: string, date: string): Promise<any | null> {
+interface ReferenceHit {
+  invoice: any | null;
+  // true when the date window didn't fit in the pages above, so no invoice was ruled out
+  unchecked: boolean;
+}
+
+async function findByReference(settings: MoneybirdSettings, reference: string, date: string): Promise<ReferenceHit> {
   if (settings.invoice_type === 'external_sales_invoice') {
     return findExternalByReference(settings, reference, date);
   }
   try {
-    return await moneybirdRequest(settings, 'GET', `/sales_invoices/find_by_reference/${encodeURIComponent(reference)}`);
+    return { invoice: await moneybirdRequest(settings, 'GET', `/sales_invoices/find_by_reference/${encodeURIComponent(reference)}`), unchecked: false };
   } catch (err) {
     if (err instanceof MoneybirdError && err.status === 404 && !/administration/i.test(err.message)) {
-      return null;
+      return { invoice: null, unchecked: false };
     }
     throw err;
   }
@@ -561,7 +569,7 @@ async function findByReference(settings: MoneybirdSettings, reference: string, d
 // within seven days of this document's date are a few pages. state:all is sent with the period, because a filter
 // replaces the defaults and the default list is only this year. The invoice whose reference is exactly this
 // string is kept; one that only contains the number (100546-R1, Test 100546) is not.
-async function findExternalByReference(settings: MoneybirdSettings, reference: string, date: string): Promise<any | null> {
+async function findExternalByReference(settings: MoneybirdSettings, reference: string, date: string): Promise<ReferenceHit> {
   const filter = `period:${referencePeriod(date)},state:all`;
   for (let page = 1; page <= MAX_EXTERNAL_PAGES; page++) {
     const list = await moneybirdRequest(settings, 'GET', '/external_sales_invoices', undefined, {
@@ -571,14 +579,10 @@ async function findExternalByReference(settings: MoneybirdSettings, reference: s
       throw new MoneybirdError(502, 'the external invoice list was not a list', 'GET /external_sales_invoices');
     }
     const found = list.find((invoice) => invoice?.reference === reference);
-    if (found) return found;
-    if (list.length < EXTERNAL_PAGE_SIZE) return null;
+    if (found) return { invoice: found, unchecked: false };
+    if (list.length < EXTERNAL_PAGE_SIZE) return { invoice: null, unchecked: false };
   }
-  throw new MoneybirdError(
-    503,
-    `no external invoice with reference ${reference} in the first ${MAX_EXTERNAL_PAGES * EXTERNAL_PAGE_SIZE} invoices of its date window`,
-    'GET /external_sales_invoices',
-  );
+  return { invoice: null, unchecked: true };
 }
 
 // YYYYMMDD..YYYYMMDD, seven days before the document date through seven days after
@@ -589,11 +593,6 @@ function referencePeriod(date: string): string {
 function shiftDay(isoDate: string, days: number): string {
   const [year, month, dayOfMonth] = isoDate.split('-').map(Number);
   return new Date(Date.UTC(year, month - 1, dayOfMonth + days)).toISOString().slice(0, 10).replace(/-/g, '');
-}
-
-// Moneybird: { reference: ["has already been taken"] }
-function referenceTaken(err: unknown): boolean {
-  return err instanceof MoneybirdError && err.status === 422 && /reference/i.test(err.message) && /taken/i.test(err.message);
 }
 
 // the invoice's ID, number, link and state, saved on the order
@@ -704,6 +703,7 @@ export async function syncRefund(
   try {
     const reference = refundReference(type, order, { id: refundId, number: refund.number }, options.env);
     let invoice: any;
+    let uncheckedRefund = false;
     if (existingId) {
       step.name = 'finish the credit invoice';
       invoice = await moneybirdRequest(typed, 'GET', `/${invoiceKind(type)}/${existingId}`);
@@ -712,9 +712,11 @@ export async function syncRefund(
       // An external one is looked up first, so a credit invoice already booked under this reference is reused.
       if (type === 'external_sales_invoice') {
         step.name = 'look for an existing credit invoice';
-        invoice = await findByReference(typed, reference, day(refund.date_created));
+        const found = await findByReference(typed, reference, day(refund.date_created));
+        invoice = found.invoice;
+        uncheckedRefund = found.unchecked;
       }
-      if (!invoice) {
+      if (!invoice?.id) {
         step.name = 'find or create the contact';
         const { id: contactId } = await ensureContact(swell, typed, order, appId);
         step.name = 'load the tax rates';
@@ -760,6 +762,7 @@ export async function syncRefund(
         moneybird_credit_invoices: [saved.moneybird_credit_invoices, line].filter(Boolean).join('\n'),
         moneybird_refunds_done: { [refundId]: true },
         moneybird_error: null,
+        ...(uncheckedRefund ? { moneybird_note: [saved.moneybird_note, UNCHECKED_REFERENCE_NOTE].filter(Boolean).join(' ') } : {}),
       },
       appId,
     );

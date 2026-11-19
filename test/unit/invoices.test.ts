@@ -10,6 +10,7 @@ import {
   syncOrder,
   syncPayment,
   syncRefund,
+  UNCHECKED_REFERENCE_NOTE,
 } from "../../functions/lib/invoices";
 import { MoneybirdError } from "../../functions/lib/moneybird";
 import {
@@ -328,23 +329,16 @@ describe("syncOrder", () => {
     expect(callKeys(fetchMock)).not.toContain("POST /external_sales_invoices");
   });
 
-  it("doesn't create an external invoice when the reference search doesn't finish", async () => {
+  it("creates the external invoice when the date window is longer than 10 pages, and doesn't run the event again", async () => {
     const page = Array.from({ length: 100 }, (_, i) => ({ id: `other-${i}`, reference: `note-${i}` }));
     const fetchMock = mockMoneybird({ "GET /external_sales_invoices": ok(page) });
-    const result = await syncOrder(makeSwell() as any, makeSettings({ invoice_type: "external_sales_invoice" }), makeOrder());
-    expect(result).toMatchObject({ status: "failed", retry: true, reason: expect.stringContaining("Couldn't look for an existing invoice") });
-    expect(callKeys(fetchMock).filter((key) => key === "GET /external_sales_invoices")).toHaveLength(10);
-    expect(callKeys(fetchMock)).not.toContain("POST /external_sales_invoices");
-  });
-
-  it("takes over an external invoice when Moneybird says the reference is already taken", async () => {
-    const fetchMock = mockMoneybird({
-      "GET /external_sales_invoices": [ok([]), ok([{ id: INVOICE_ID, state: "open", reference: "100546", total_unpaid: "54.45" }])],
-      "POST /external_sales_invoices": fail(422, { reference: ["has already been taken"] }),
-    });
-    const result = await syncOrder(makeSwell() as any, makeSettings({ invoice_type: "external_sales_invoice" }), makeOrder());
+    const swell = makeSwell();
+    const result = await syncOrder(swell as any, makeSettings({ invoice_type: "external_sales_invoice" }), makeOrder());
     expect(result).toMatchObject({ status: "sent", done: ["created", "payment registered"] });
-    expect(callKeys(fetchMock).filter((key) => key === "POST /external_sales_invoices")).toHaveLength(1);
+    expect(callKeys(fetchMock).filter((key) => key === "GET /external_sales_invoices")).toHaveLength(10);
+    expect(callKeys(fetchMock)).toContain("POST /external_sales_invoices");
+    expect(savedOn(swell, orderPath).moneybird_note).toBe(UNCHECKED_REFERENCE_NOTE);
+    expect(() => retryIfTemporary(result)).not.toThrow();
   });
 
   it("links an invoice an earlier run created but didn't save", async () => {
@@ -644,6 +638,26 @@ describe("syncRefund", () => {
     expect(result).toEqual({ status: "sent", invoice_id: CREDIT_ID, done: ["refund"] });
     expect(callKeys(fetchMock)).not.toContain("POST /external_sales_invoices");
     expect(savedOn(swell, orderPath).moneybird_refunds).toEqual({ [REFUND_ID]: CREDIT_ID });
+  });
+
+  it("creates the credit invoice when the refund's date window is longer than 10 pages, and doesn't run the event again", async () => {
+    const page = Array.from({ length: 100 }, (_, i) => ({ id: `other-${i}`, reference: `note-${i}` }));
+    const fetchMock = mockMoneybird({
+      "GET /external_sales_invoices": ok(page),
+      "POST /external_sales_invoices": ok({ id: CREDIT_ID, state: "open", reference: "100546-R100015", total_price_incl_tax: "-10.0" }, 201),
+      [`POST /external_sales_invoices/${CREDIT_ID}/payments`]: ok({ id: "pay_2" }, 201),
+    });
+    const swell = makeSwell();
+    const result = await syncRefund(
+      swell as any,
+      makeSettings(),
+      sent({ moneybird_invoice_type: "external_sales_invoice", moneybird_note: "earlier" }),
+      refund,
+    );
+    expect(result).toMatchObject({ status: "sent", invoice_id: CREDIT_ID });
+    expect(callKeys(fetchMock)).toContain("POST /external_sales_invoices");
+    expect(savedOn(swell, orderPath).moneybird_note).toBe(`earlier ${UNCHECKED_REFERENCE_NOTE}`);
+    expect(() => retryIfTemporary(result)).not.toThrow();
   });
 
   it("retries an external credit invoice whose create failed, because the next run finds it by reference", async () => {
