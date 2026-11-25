@@ -267,9 +267,37 @@ export function orderReference(order: any, env?: 'test' | null) {
 
 // Every document made in the test environment gets "Test" in its reference, so in an administration shared with live
 // it stands apart from live documents (and a test order never matches a live one with the same number).
+// The buyer's PO number goes beside the order number: "Order 100546 / PO 4500012345".
 export function documentReference(type: string, order: any, env?: 'test' | null) {
-  if (type === 'sales_invoice') return orderReference(order, env);
-  return `${env === 'test' ? 'Test ' : ''}${order.number}`;
+  const reference = type === 'sales_invoice' ? orderReference(order, env) : `${env === 'test' ? 'Test ' : ''}${order.number}`;
+  const po = poNumber(order);
+  return po ? `${reference} / PO ${po}` : reference;
+}
+
+// --- payment terms ---
+
+// The order's payment method is one of "Also invoice unpaid orders paid with these payment methods": it's invoiced
+// when placed, unpaid, and its payments are registered as they come in
+export function invoicesUnpaid(settings: MoneybirdSettings, order: any): boolean {
+  const method = order?.billing?.method;
+  return Boolean(method) && settings.unpaid_methods.includes(String(method));
+}
+
+// Terms fields Wholesale Desk (app id wholesale_desk) saves on the order; read when present, never required
+const termsOf = (order: any) => order?.$app?.wholesale_desk || {};
+
+// the buyer's PO number, at most 60 characters like in Wholesale Desk
+function poNumber(order: any): string {
+  const po = termsOf(order).po_number;
+  return typeof po === 'string' || typeof po === 'number' ? String(po).trim().slice(0, 60) : '';
+}
+
+// Wholesale Desk's due date as a day like the invoice date (UTC), never before the invoice date; undefined without one
+export function dueDay(order: any, invoiceDate: string): string | undefined {
+  const due = termsOf(order).date_due;
+  if (!due || !Number.isFinite(new Date(due).getTime())) return undefined;
+  const dueOn = day(due);
+  return dueOn < invoiceDate ? invoiceDate : dueOn;
 }
 
 export function refundReference(type: string, order: any, refund: { id: string; number?: string }, env?: 'test' | null) {
@@ -303,6 +331,8 @@ interface DocumentInput {
   contactId: string;
   reference: string;
   date: string;
+  // the day it's due; without it Moneybird uses the workflow's payment terms (sales invoices)
+  dueDate?: string;
   currency: string;
   inclTax: boolean;
   details: Record<string, any>[];
@@ -317,6 +347,7 @@ async function createDocument(settings: MoneybirdSettings, input: DocumentInput)
         contact_id: input.contactId,
         reference: input.reference,
         date: input.date,
+        due_date: input.dueDate,
         currency: input.currency,
         prices_are_incl_tax: input.inclTax,
         source: SOURCE,
@@ -330,6 +361,8 @@ async function createDocument(settings: MoneybirdSettings, input: DocumentInput)
       contact_id: input.contactId,
       reference: input.reference,
       invoice_date: input.date,
+      // sales invoices take the days after the invoice date, not a date
+      first_due_interval: input.dueDate ? Math.round((Date.parse(input.dueDate) - Date.parse(input.date)) / 86_400_000) : undefined,
       currency: input.currency,
       prices_are_incl_tax: input.inclTax,
       workflow_id: settings.workflow_id || undefined,
@@ -386,11 +419,11 @@ const STATE_LABELS: Record<string, string> = {
 
 export const stateLabel = (state: unknown) => STATE_LABELS[String(state)] || String(state || '');
 
-// why an order isn't sent, or undefined when it can be
-export function orderSkipReason(order: any): string | undefined {
+// why an order isn't sent, or undefined when it can be; orders paid with an unpaid_methods method are sent unpaid
+export function orderSkipReason(order: any, settings?: MoneybirdSettings): string | undefined {
   if (!order?.id) return 'order not found';
   if (order.draft) return 'order is a draft';
-  if (!order.paid) return 'order is not paid';
+  if (!order.paid && !(settings && invoicesUnpaid(settings, order))) return 'order is not paid';
   if (!(Number(order.grand_total) > 0)) return 'order total is 0';
   return undefined;
 }
@@ -400,7 +433,7 @@ export function orderSkipReason(order: any): string | undefined {
 export async function syncOrder(swell: SwellClient, settings: MoneybirdSettings, order: any, options: SyncOptions = {}): Promise<SyncResult> {
   const appId = options.appId || APP_ID;
   const path = `/orders/${order?.id}`;
-  const reason = orderSkipReason(order);
+  const reason = orderSkipReason(order, settings);
   if (reason) {
     return { status: 'skipped', reason };
   }
@@ -419,7 +452,7 @@ export async function syncOrder(swell: SwellClient, settings: MoneybirdSettings,
   try {
     if (!invoiceId && type === 'sales_invoice') {
       // an invoice made by an earlier run whose result wasn't saved
-      const found = await findByReference(typed, orderReference(order, options.env));
+      const found = await findByReference(typed, documentReference(type, order, options.env));
       if (found?.id) {
         invoiceId = String(found.id);
         state = found.state;
@@ -435,10 +468,12 @@ export async function syncOrder(swell: SwellClient, settings: MoneybirdSettings,
       const rates = options.taxRates ?? (await salesTaxRates(typed));
       const { details, unmatched } = detailsAttributes(orderLines(order), rates, typed, order.billing?.country || order.shipping?.country);
       step.name = 'create the invoice';
+      const date = day(order.date_created);
       const invoice = await createDocument(typed, {
         contactId,
         reference: documentReference(type, order, options.env),
-        date: day(order.date_created),
+        date,
+        dueDate: dueDay(order, date),
         currency: order.currency,
         inclTax: Boolean(order.item_tax_included),
         details,
@@ -466,7 +501,8 @@ export async function syncOrder(swell: SwellClient, settings: MoneybirdSettings,
       await saveValues(swell, path, invoiceValues(typed, invoice), appId);
     }
 
-    if (settings.register_payments && !saved.moneybird_paid_at && state !== 'draft' && state !== 'paid') {
+    // an order invoiced unpaid gets its payments when they're made (syncPayment), and the rest once it's paid
+    if (settings.register_payments && order.paid && !saved.moneybird_paid_at && state !== 'draft' && state !== 'paid') {
       step.name = 'register the payment';
       const invoice = await moneybirdRequest(typed, 'GET', `/${invoiceKind(type)}/${invoiceId}`);
       const unpaid = unpaidOf(invoice);
@@ -533,6 +569,53 @@ function totalNote(order: any, invoice: any, unmatched: number[], settings: Mone
     notes.push(`The Moneybird total ${total.toFixed(2)} differs from the Swell total ${money(order.grand_total).toFixed(2)}.`);
   }
   return notes.length ? notes.join(' ') : null;
+}
+
+// --- payments of orders invoiced unpaid ---
+
+// Register a Swell payment on the invoice of an order invoiced unpaid, once per payment. The payment that makes the
+// order paid is left to syncOrder (order.paid), which registers what's left unpaid on the invoice.
+export async function syncPayment(
+  swell: SwellClient,
+  settings: MoneybirdSettings,
+  order: any,
+  payment: { id: string; amount: unknown; number?: string; date_created?: string },
+  options: SyncOptions = {},
+): Promise<SyncResult> {
+  const appId = options.appId || APP_ID;
+  const saved = appData(order, appId);
+  const paymentId = String(payment.id);
+  const invoiceId: string = saved.moneybird_invoice_id || '';
+  if (!invoiceId) return { status: 'skipped', reason: "the order isn't in Moneybird" };
+  if (saved.moneybird_paid_at || saved.moneybird_payments?.[paymentId]) return { status: 'unchanged', reason: 'payment already in Moneybird' };
+  if (!(money(payment.amount) > 0)) return { status: 'skipped', reason: 'payment amount is 0' };
+
+  const type = saved.moneybird_invoice_type || settings.invoice_type;
+  const typed = { ...settings, invoice_type: type } as MoneybirdSettings;
+  const path = `/orders/${order.id}`;
+  // also finds a payment an earlier run registered but didn't save
+  const transaction = `Swell payment ${payment.number || paymentId} of order ${order.number}`;
+  try {
+    const invoice = await moneybirdRequest(typed, 'GET', `/${invoiceKind(type)}/${invoiceId}`);
+    if (invoice?.state === 'draft') return { status: 'skipped', reason: 'the invoice is a draft' };
+    const unpaid = unpaidOf(invoice);
+    const registered = (invoice?.payments || []).some((p: any) => p?.transaction_identifier === transaction);
+    // never more than what's left to pay on the invoice
+    const price = money(Math.min(money(payment.amount), unpaid.price));
+    if (!registered && price > 0) {
+      const base = unpaid.base === undefined ? undefined : price === unpaid.price ? unpaid.base : money((unpaid.base * price) / unpaid.price);
+      await registerPayment(typed, invoiceId, { price, base }, day(payment.date_created), transaction);
+    }
+    await saveValues(swell, path, { moneybird_payments: { [paymentId]: true }, moneybird_error: null }, appId);
+    return !registered && price > 0
+      ? { status: 'updated', invoice_id: invoiceId, done: ['payment registered'] }
+      : { status: 'unchanged', reason: registered ? 'payment already in Moneybird' : 'nothing left to pay on the invoice' };
+  } catch (err) {
+    const message = `Couldn't register the payment: ${connectionError(err)}`;
+    await saveValues(swell, path, { moneybird_error: message }, appId);
+    // a payment registered by a failed call is found by its transaction identifier next time
+    return { status: 'failed', reason: message, error: err, retry: true };
+  }
 }
 
 // --- refunds ---

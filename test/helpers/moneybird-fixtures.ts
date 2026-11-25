@@ -19,6 +19,7 @@ export const ADMIN_URL = "https://shop.swell.store/admin";
 export const ORDER_ID = "6ad0bd84dfd3c8001209250f";
 export const ACCOUNT_ID = "6abf95ed455bb60012798bfa";
 export const REFUND_ID = "6acf741edb7b280012017602";
+export const PAYMENT_ID = "6acf741edb7b280012017603";
 export const CONTACT_ID = "501000000000000001";
 export const INVOICE_ID = "501000000000000002";
 export const CREDIT_ID = "501000000000000003";
@@ -134,6 +135,7 @@ export function makeSwell(records: Record<string, any> = {}, settings: any = raw
       if (path === `/orders/${ORDER_ID}`) return "order" in records ? records.order : makeOrder();
       if (path === `/payments:refunds/${REFUND_ID}`) return records.refund ?? null;
       if (path === "/payments") return { results: records.payments ?? [] };
+      if (path === `/payments/${PAYMENT_ID}`) return records.payment ?? null;
       if (path === "/orders") {
         if (query?.where?.paid) return { results: pages.shift() ?? [] };
         return { results: "orders" in records ? records.orders : [makeOrder()] };

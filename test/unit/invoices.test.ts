@@ -8,6 +8,7 @@ import {
   refundReference,
   retryIfTemporary,
   syncOrder,
+  syncPayment,
   syncRefund,
 } from "../../functions/lib/invoices";
 import { MoneybirdError } from "../../functions/lib/moneybird";
@@ -18,6 +19,7 @@ import {
   CREDIT_ID,
   INVOICE_ID,
   ORDER_ID,
+  PAYMENT_ID,
   REFUND_ID,
   bodyOf,
   callKeys,
@@ -330,6 +332,128 @@ describe("syncOrder", () => {
     mockMoneybird({ "POST /sales_invoices": fail(502, "bad gateway") });
     const sales = await syncOrder(makeSwell() as any, makeSettings(), makeOrder());
     expect(() => retryIfTemporary(sales)).toThrow(MoneybirdError);
+  });
+});
+
+describe("payment terms", () => {
+  const terms = () => makeSettings({ unpaid_methods: ["net_terms"] });
+  const wholesale = { terms: true, net_days: 30, date_due: "2026-11-14T14:03:11.000Z", po_number: "4500012345" };
+  const termsOrder = (overrides: Record<string, any> = {}) =>
+    makeOrder({ paid: false, billing: { ...makeOrder().billing, method: "net_terms" }, ...overrides });
+  const poLookup = "GET /sales_invoices/find_by_reference/Order%20100546%20%2F%20PO%204500012345";
+
+  it("doesn't send unpaid orders while the setting is empty or the method isn't in it", async () => {
+    const fetchMock = mockMoneybird();
+    expect(await syncOrder(makeSwell() as any, makeSettings(), termsOrder())).toEqual({ status: "skipped", reason: "order is not paid" });
+    const card = termsOrder({ billing: { method: "card" } });
+    expect(await syncOrder(makeSwell() as any, terms(), card)).toEqual({ status: "skipped", reason: "order is not paid" });
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it("invoices an unpaid order paid with a listed method, without registering a payment", async () => {
+    const fetchMock = mockMoneybird();
+    const swell = makeSwell();
+    const result = await syncOrder(swell as any, terms(), termsOrder());
+    expect(result).toEqual({ status: "sent", invoice_id: INVOICE_ID, done: ["created", "marked as sent"] });
+    expect(callKeys(fetchMock)).not.toContain(`POST /sales_invoices/${INVOICE_ID}/payments`);
+    // without Wholesale Desk's fields: the order reference and the workflow's payment terms
+    const body = bodyOf(fetchMock, "POST /sales_invoices").sales_invoice;
+    expect(body.reference).toBe("Order 100546");
+    expect(body).not.toHaveProperty("first_due_interval");
+    expect(savedOn(swell, orderPath)).toMatchObject({ moneybird_invoice_id: INVOICE_ID, moneybird_state: "open" });
+    expect(savedOn(swell, orderPath)).not.toHaveProperty("moneybird_paid_at");
+  });
+
+  it("takes the due date and PO number from Wholesale Desk", async () => {
+    const fetchMock = mockMoneybird({ [poLookup]: fail(404, "record not found") });
+    await syncOrder(makeSwell() as any, terms(), termsOrder({ $app: { wholesale_desk: wholesale } }));
+    expect(callKeys(fetchMock)[0]).toBe(poLookup);
+    expect(bodyOf(fetchMock, "POST /sales_invoices").sales_invoice).toMatchObject({
+      reference: "Order 100546 / PO 4500012345",
+      invoice_date: "2026-10-15",
+      first_due_interval: 30,
+    });
+
+    vi.restoreAllMocks();
+    const external = mockMoneybird();
+    await syncOrder(makeSwell() as any, makeSettings({ invoice_type: "external_sales_invoice", unpaid_methods: ["net_terms"] }), termsOrder({ $app: { wholesale_desk: wholesale } }));
+    expect(bodyOf(external, "POST /external_sales_invoices").external_sales_invoice).toMatchObject({
+      reference: "100546 / PO 4500012345",
+      date: "2026-10-15",
+      due_date: "2026-11-14",
+    });
+  });
+
+  it("never dates the due date before the invoice date", async () => {
+    const fetchMock = mockMoneybird();
+    await syncOrder(makeSwell() as any, terms(), termsOrder({ $app: { wholesale_desk: { date_due: "2026-10-01T00:00:00.000Z" } } }));
+    expect(bodyOf(fetchMock, "POST /sales_invoices").sales_invoice.first_due_interval).toBe(0);
+  });
+
+  const invoiced = (values: Record<string, any> = {}, overrides: Record<string, any> = {}) =>
+    termsOrder({ $app: { moneybird: { moneybird_invoice_id: INVOICE_ID, moneybird_invoice_type: "sales_invoice", moneybird_state: "open", ...values } }, ...overrides });
+  const payment = { id: PAYMENT_ID, amount: 20, number: "100021", date_created: "2026-10-20T10:00:00.000Z" };
+  const transaction = "Swell payment 100021 of order 100546";
+
+  it("registers a partial payment on the invoice, once", async () => {
+    const fetchMock = mockMoneybird();
+    const swell = makeSwell();
+    expect(await syncPayment(swell as any, terms(), invoiced(), payment)).toEqual({ status: "updated", invoice_id: INVOICE_ID, done: ["payment registered"] });
+    expect(bodyOf(fetchMock, `POST /sales_invoices/${INVOICE_ID}/payments`)).toEqual({
+      payment: { payment_date: "2026-10-20", price: "20.00", transaction_identifier: transaction },
+    });
+    expect(savedOn(swell, orderPath)).toEqual({ moneybird_payments: { [PAYMENT_ID]: true }, moneybird_error: null });
+
+    // saved on the order: nothing is called
+    vi.restoreAllMocks();
+    let again = mockMoneybird();
+    expect((await syncPayment(makeSwell() as any, terms(), invoiced({ moneybird_payments: { [PAYMENT_ID]: true } }), payment)).status).toBe("unchanged");
+    expect(again).not.toHaveBeenCalled();
+
+    // registered by a run whose result wasn't saved: found on the invoice by its transaction identifier
+    vi.restoreAllMocks();
+    again = mockMoneybird({
+      [`GET /sales_invoices/${INVOICE_ID}`]: ok(makeInvoice({ state: "open", total_unpaid: "34.45", payments: [{ transaction_identifier: transaction, price: "20.0" }] })),
+    });
+    const swell2 = makeSwell();
+    expect((await syncPayment(swell2 as any, terms(), invoiced(), payment)).status).toBe("unchanged");
+    expect(callKeys(again)).not.toContain(`POST /sales_invoices/${INVOICE_ID}/payments`);
+    expect(savedOn(swell2, orderPath).moneybird_payments).toEqual({ [PAYMENT_ID]: true });
+  });
+
+  it("caps a payment at the unpaid total, with its share in the administration's currency", async () => {
+    const fetchMock = mockMoneybird({
+      [`GET /sales_invoices/${INVOICE_ID}`]: ok(makeInvoice({ state: "open", total_unpaid: "50.0", total_unpaid_base: "40.0" })),
+    });
+    await syncPayment(makeSwell() as any, terms(), invoiced(), { ...payment, amount: 25 });
+    expect(bodyOf(fetchMock, `POST /sales_invoices/${INVOICE_ID}/payments`).payment).toMatchObject({ price: "25.00", price_base: "20.00" });
+
+    vi.restoreAllMocks();
+    const over = mockMoneybird({ [`GET /sales_invoices/${INVOICE_ID}`]: ok(makeInvoice({ state: "open", total_unpaid: "10.0" })) });
+    await syncPayment(makeSwell() as any, terms(), invoiced(), payment);
+    expect(bodyOf(over, `POST /sales_invoices/${INVOICE_ID}/payments`).payment.price).toBe("10.00");
+  });
+
+  it("skips orders not in Moneybird, paid invoices, drafts and empty payments", async () => {
+    const fetchMock = mockMoneybird({ [`GET /sales_invoices/${INVOICE_ID}`]: ok(makeInvoice({ state: "draft" })) });
+    expect(await syncPayment(makeSwell() as any, terms(), termsOrder(), payment)).toEqual({ status: "skipped", reason: "the order isn't in Moneybird" });
+    expect((await syncPayment(makeSwell() as any, terms(), invoiced({ moneybird_paid_at: "x" }), payment)).status).toBe("unchanged");
+    expect(await syncPayment(makeSwell() as any, terms(), invoiced(), { ...payment, amount: 0 })).toEqual({ status: "skipped", reason: "payment amount is 0" });
+    expect(await syncPayment(makeSwell() as any, terms(), invoiced(), payment)).toEqual({ status: "skipped", reason: "the invoice is a draft" });
+    expect(callKeys(fetchMock)).toEqual([`GET /sales_invoices/${INVOICE_ID}`]);
+  });
+
+  it("registers what's left when the order is paid, without a second invoice", async () => {
+    const fetchMock = mockMoneybird({
+      [`GET /sales_invoices/${INVOICE_ID}`]: ok(makeInvoice({ state: "open", invoice_id: "2026-0042", total_unpaid: "34.45" })),
+    });
+    const swell = makeSwell();
+    const order = invoiced({ moneybird_payments: { [PAYMENT_ID]: true } }, { paid: true });
+    const result = await syncOrder(swell as any, terms(), order, { paymentDate: "2026-11-10" });
+    expect(result).toEqual({ status: "updated", invoice_id: INVOICE_ID, done: ["payment registered"] });
+    expect(callKeys(fetchMock)).toEqual([`GET /sales_invoices/${INVOICE_ID}`, `POST /sales_invoices/${INVOICE_ID}/payments`]);
+    expect(bodyOf(fetchMock, `POST /sales_invoices/${INVOICE_ID}/payments`).payment).toMatchObject({ price: "34.45", payment_date: "2026-11-10" });
+    expect(savedOn(swell, orderPath)).toMatchObject({ moneybird_state: "paid", moneybird_paid_at: "2026-10-16T09:00:00.000Z" });
   });
 });
 

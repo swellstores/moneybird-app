@@ -27,6 +27,10 @@
       "type": "date",
       "description": "When the payment was registered in Moneybird"
     },
+    "moneybird_payments": {
+      "type": "object",
+      "description": "Swell payment IDs registered one by one on an invoice made when the order was placed, unpaid"
+    },
     "moneybird_refunds": {
       "type": "object",
       "description": "Moneybird credit invoice IDs by Swell refund ID, saved as soon as each is created"

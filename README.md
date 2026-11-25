@@ -13,6 +13,8 @@ kept as strings.
 | Swell event                | What happens in Moneybird                                     | Function                     |
 | -------------------------- | ------------------------------------------------------------- | ---------------------------- |
 | `order.paid`               | Contact found or created, invoice created, numbered and paid  | `functions/order-events.ts`  |
+| `order.submitted`          | Same, unpaid, for orders paid with a method you list ([payment terms](#payment-terms)) | `functions/order-events.ts` |
+| `payment.succeeded`        | A later payment of such an order registered on its invoice   | `functions/payment-events.ts`|
 | `payment.refund.succeeded` | Credit invoice (or negative external invoice) for the refund  | `functions/refund-events.ts` |
 | `account.updated`          | The customer's existing contact is updated                    | `functions/account-events.ts`|
 
@@ -62,6 +64,30 @@ aren't invoice lines.
 
 The order's **Note** shows tax percentages without a matching rate and a Moneybird total that differs from Swell's
 grand total.
+
+### Payment terms
+
+Business buyers on net payment terms (e.g. with the Wholesale Desk app) check out with a manual payment method and pay
+later. List those methods' IDs (**Settings → Payments**, e.g. `net_terms`) under **Also invoice unpaid orders paid with
+these payment methods** (`unpaid_methods`), and an order paid with one of them is sent when it's placed
+(`order.submitted`) instead of when it's paid: contact, invoice and number as above, without a payment. Empty (the
+default) sends only paid orders, as before. **Send to Moneybird** sends such orders unpaid too; **Send existing
+orders** sends only paid ones.
+
+- **Payments** – with **Register payments** on, each later Swell payment that leaves the order unpaid, partial ones
+  included (`payment.succeeded`), is registered on the invoice for its amount (at most the invoice's unpaid total),
+  dated on the payment, with `transaction_identifier: Swell payment <payment number> of order <number>`. Each one is
+  saved on the order (`moneybird_payments`, by Swell payment ID) and also found on the invoice by its transaction
+  identifier, so it's never registered twice. The payment that makes the order paid fires `order.paid`, which finds
+  the existing invoice and registers what's left unpaid on it, as for any paid order. Payments made while the order
+  isn't in Moneybird, or while its invoice is a draft, are covered by that last registration.
+- **Wholesale Desk's terms** – the app reads these fields on the order when they're present (`$app.wholesale_desk`),
+  and never requires the Wholesale Desk app:
+  - `date_due` (date and time) – its day (UTC, like the invoice date), never before the invoice date, becomes the
+    due date: `first_due_interval` (days after the invoice date) on sales invoices, `due_date` on external sales
+    invoices. Without it, sales invoices use the workflow's payment terms and external invoices get no due date.
+  - `po_number` – added to the reference after the order number: `Order <number> / PO <po>` on sales invoices,
+    `<number> / PO <po>` on external sales invoices (at most 60 characters of the PO).
 
 ### Refunds
 
@@ -176,6 +202,7 @@ minute, doubling).
 | `document_style_id`     | text   |                 | Sales invoices: document style; empty uses the default.                                      |
 | `default_tax_rate_id`   | text   |                 | Tax rate for lines whose percentage has no Moneybird rate.                                   |
 | `ledger_account_id`     | text   |                 | Revenue ledger account for every line.                                                        |
+| `unpaid_methods`        | tags   |                 | Manual payment method IDs whose orders are invoiced when placed, unpaid ([payment terms](#payment-terms)). |
 | `register_payments`     | toggle | on              | Register the payment on the invoice.                                                          |
 | `financial_account_id`  | text   |                 | Financial account the payment is booked on.                                                   |
 | `payment_without_proof` | toggle | off             | Register payments as payment without proof (turn it on in Moneybird first).                  |
@@ -222,7 +249,8 @@ add the …").
 
 ## Limits and known behavior
 
-- **Only paid orders** – orders are sent when they're paid; unpaid, draft and free orders aren't.
+- **Only paid orders** – orders are sent when they're paid; unpaid, draft and free orders aren't, except unpaid
+  orders paid with a method listed for [payment terms](#payment-terms).
 - **Canceled orders** – canceling an order doesn't change its invoice. Refund it in Swell to book a credit invoice.
 - **Tax rates** – a line's rate is matched by percentage among the administration's active sales tax rates (all
   pages). Create the missing rates in Moneybird, or set a default tax rate; the order's note lists the percentages
@@ -244,7 +272,8 @@ add the …").
 
 ```
 functions/
-  order-events.ts      # order.paid → contact, invoice, number, payment
+  order-events.ts      # order.paid → contact, invoice, number, payment; order.submitted → the same unpaid (payment terms)
+  payment-events.ts    # payment.succeeded → later payment of an order invoiced unpaid
   refund-events.ts     # payment.refund.succeeded → credit invoice
   account-events.ts    # account.updated → contact update
   send-to-moneybird.ts # order and bulk action

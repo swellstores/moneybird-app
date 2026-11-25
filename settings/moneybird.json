@@ -149,6 +149,13 @@
           "label": "Revenue ledger account ID",
           "type": "short_text",
           "description": "Optional. Books all lines to this revenue account; empty uses Moneybird's default."
+        },
+        {
+          "id": "unpaid_methods",
+          "label": "Also invoice unpaid orders paid with these payment methods",
+          "type": "tags",
+          "placeholder": "net_terms",
+          "description": "Optional. IDs of manual payment methods (Settings → Payments), e.g. a net-terms method. A matching order is invoiced when it's placed rather than when it's paid, and each payment is registered on the invoice as it's made. Empty sends only paid orders."
         }
       ]
     },
