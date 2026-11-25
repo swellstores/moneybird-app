@@ -40,6 +40,8 @@ export interface MoneybirdSettings {
   financial_account_id: string;
   send_refunds: boolean;
   sync_contacts: boolean;
+  // manual payment method IDs whose orders are invoiced when placed, unpaid
+  unpaid_methods: string[];
 }
 
 // read app settings and apply defaults for values the merchant has not saved yet
@@ -64,6 +66,7 @@ export function getSettings(all: any): MoneybirdSettings {
     financial_account_id: text(raw.financial_account_id),
     send_refunds: flag(raw.send_refunds, true),
     sync_contacts: flag(raw.sync_contacts, true),
+    unpaid_methods: Array.isArray(raw.unpaid_methods) ? raw.unpaid_methods.map(text).filter(Boolean) : [],
   };
 }
 

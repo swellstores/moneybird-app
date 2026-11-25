@@ -8,6 +8,7 @@ import {
   STORE_URL,
   INVOICE_ID,
   ORDER_ID,
+  PAYMENT_ID,
   REFUND_ID,
   bodyOf,
   callKeys,
@@ -22,6 +23,7 @@ import {
 } from "../helpers/moneybird-fixtures";
 import orderEvents, { config as orderConfig } from "../../functions/order-events";
 import refundEvents, { config as refundConfig } from "../../functions/refund-events";
+import paymentEvents, { config as paymentConfig } from "../../functions/payment-events";
 import accountEvents, { config as accountConfig, isContactChange } from "../../functions/account-events";
 import testConnection, { config as testConfig } from "../../functions/test-connection";
 import sendToMoneybird, { MAX_SELECTION, config as sendConfig } from "../../functions/send-to-moneybird";
@@ -61,7 +63,7 @@ async function expectFailure(result: Promise<unknown>, message: string | RegExp)
 
 describe("order-events", () => {
   it("sends paid orders", async () => {
-    expect(orderConfig.model?.events).toEqual(["order.paid"]);
+    expect(orderConfig.model?.events).toEqual(["order.paid", "order.submitted"]);
     const fetchMock = mockMoneybird();
     const { req, swell } = request({ id: ORDER_ID, $event: { type: "order.paid" } });
     await orderEvents(req);
@@ -92,6 +94,71 @@ describe("order-events", () => {
     const { req, swell } = request({ id: ORDER_ID });
     await expect(orderEvents(req)).resolves.toBeUndefined();
     expect(savedOn(swell, orderPath).moneybird_error).toBe("Couldn't create the invoice: Moneybird refused it: reference is invalid");
+  });
+});
+
+describe("orders paid with a method invoiced unpaid", () => {
+  const terms = { ...rawSettings, unpaid_methods: ["net_terms"] };
+  const placed = { id: ORDER_ID, $event: { type: "order.submitted" } };
+  const termsOrder = (overrides: Record<string, any> = {}) =>
+    makeOrder({ paid: false, billing: { ...makeOrder().billing, method: "net_terms" }, ...overrides });
+
+  it("ignores placed orders while the setting is empty", async () => {
+    const fetchMock = mockMoneybird();
+    const { req, swell } = request(placed, { order: termsOrder() });
+    await orderEvents(req);
+    expect(swell.get).not.toHaveBeenCalled();
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it("sends a placed unpaid order paid with a listed method", async () => {
+    const fetchMock = mockMoneybird();
+    const { req, swell } = request(placed, { order: termsOrder() }, terms);
+    await orderEvents(req);
+    expect(callKeys(fetchMock)).toContain("POST /sales_invoices");
+    expect(callKeys(fetchMock)).not.toContain(`POST /sales_invoices/${INVOICE_ID}/payments`);
+    expect(savedOn(swell, orderPath).moneybird_invoice_id).toBe(INVOICE_ID);
+  });
+
+  it("leaves other placed orders, and placed orders already paid, to order.paid", async () => {
+    const fetchMock = mockMoneybird();
+    for (const order of [termsOrder({ billing: { method: "card" } }), termsOrder({ paid: true })]) {
+      await orderEvents(request(placed, { order }, terms).req);
+    }
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  const sent = (overrides: Record<string, any> = {}) =>
+    termsOrder({ $app: { moneybird: { moneybird_invoice_id: INVOICE_ID, moneybird_invoice_type: "sales_invoice", moneybird_state: "open" } }, ...overrides });
+  const payment = { id: PAYMENT_ID, order_id: ORDER_ID, amount: 20, number: "100021", date_created: "2026-10-20T10:00:00.000Z" };
+
+  it("registers a later partial payment on the invoice", async () => {
+    expect(paymentConfig.model?.events).toEqual(["payment.succeeded"]);
+    const fetchMock = mockMoneybird();
+    const { req, swell } = request({ id: PAYMENT_ID }, { order: sent(), payment }, terms);
+    await paymentEvents(req);
+    expect(swell.get).toHaveBeenCalledWith(`/payments/${PAYMENT_ID}`);
+    expect(bodyOf(fetchMock, `POST /sales_invoices/${INVOICE_ID}/payments`).payment).toMatchObject({
+      price: "20.00",
+      transaction_identifier: "Swell payment 100021 of order 100546",
+    });
+    expect(savedOn(swell, orderPath).moneybird_payments).toEqual({ [PAYMENT_ID]: true });
+  });
+
+  it("ignores payments while the setting is empty, of other methods, and the one that makes the order paid", async () => {
+    const fetchMock = mockMoneybird();
+    const { req, swell } = request(payment, { order: sent() });
+    await paymentEvents(req);
+    expect(swell.get).not.toHaveBeenCalled();
+    for (const order of [sent({ billing: { method: "card" } }), sent({ paid: true })]) {
+      await paymentEvents(request(payment, { order }, terms).req);
+    }
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it("throws temporary failures so Swell runs the payment event again", async () => {
+    mockMoneybird({ [`POST /sales_invoices/${INVOICE_ID}/payments`]: fail(503, "down") });
+    await expect(paymentEvents(request(payment, { order: sent() }, terms).req)).rejects.toMatchObject({ status: 503 });
   });
 });
 

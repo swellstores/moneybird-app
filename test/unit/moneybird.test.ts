@@ -41,6 +41,7 @@ describe("settings", () => {
       financial_account_id: "",
       send_refunds: true,
       sync_contacts: true,
+      unpaid_methods: [],
     });
   });
 
@@ -50,6 +51,7 @@ describe("settings", () => {
     });
     expect(settings).toMatchObject({ administration_id: "123", invoice_type: "external_sales_invoice", finalize: "email", enabled: false });
     expect(getSettings({ moneybird: { finalize: "other" } }).finalize).toBe("manual");
+    expect(getSettings({ moneybird: { unpaid_methods: [" net_terms ", "", 5] } }).unpaid_methods).toEqual(["net_terms", "5"]);
   });
 
   it("names the missing settings", () => {
