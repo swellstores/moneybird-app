@@ -10,6 +10,7 @@ import {
   syncOrder,
   syncPayment,
   syncRefund,
+  UNCHECKED_REFERENCE_NOTE,
 } from "../../functions/lib/invoices";
 import { MoneybirdError } from "../../functions/lib/moneybird";
 import {
@@ -33,6 +34,8 @@ import {
   ok,
   savedOn,
 } from "../helpers/moneybird-fixtures";
+
+const externalSearch = (fetchMock: { mock: { calls: any[][] } }) => new URL(calls(fetchMock).find((call) => call.key === "GET /external_sales_invoices")!.url).searchParams;
 
 beforeEach(() => {
   vi.spyOn(console, "error").mockImplementation(() => {});
@@ -258,6 +261,8 @@ describe("syncOrder", () => {
     const result = await syncOrder(swell as any, makeSettings({ invoice_type: "external_sales_invoice" }), makeOrder(), { adminUrl: "https://a/admin" });
     expect(result).toMatchObject({ status: "sent", done: ["created", "payment registered"] });
     expect(callKeys(fetchMock)).not.toContain("GET /sales_invoices/find_by_reference/Order%20100546");
+    expect(externalSearch(fetchMock).get("query")).toBeNull();
+    expect(externalSearch(fetchMock).get("filter")).toBe("period:20261008..20261022,state:all");
     expect(bodyOf(fetchMock, "POST /external_sales_invoices").external_sales_invoice).toMatchObject({
       reference: "100546",
       date: "2026-10-15",
@@ -276,6 +281,64 @@ describe("syncOrder", () => {
     const result = await syncOrder(makeSwell() as any, makeSettings({ invoice_type: "external_sales_invoice" }), order);
     expect(result).toMatchObject({ status: "updated", done: ["marked as sent", "payment registered"] });
     expect(callKeys(fetchMock)).not.toContain("POST /sales_invoices");
+  });
+
+  it("reuses an external invoice with the same reference and doesn't create another", async () => {
+    const fetchMock = mockMoneybird({
+      "GET /external_sales_invoices": ok([{ id: INVOICE_ID, state: "open", reference: "100546", total_unpaid: "54.45" }]),
+    });
+    const swell = makeSwell();
+    const result = await syncOrder(swell as any, makeSettings({ invoice_type: "external_sales_invoice" }), makeOrder());
+    expect(result).toMatchObject({ status: "updated", done: ["payment registered"] });
+    expect(callKeys(fetchMock)).not.toContain("POST /external_sales_invoices");
+    expect(savedOn(swell, orderPath)).toMatchObject({ moneybird_invoice_id: INVOICE_ID, moneybird_invoice_number: "100546" });
+  });
+
+  it("doesn't take an external invoice whose reference only contains the order number", async () => {
+    const fetchMock = mockMoneybird({
+      "GET /external_sales_invoices": ok([
+        { id: "other", reference: "100546-R1" },
+        { id: "test", reference: "Test 100546" },
+      ]),
+    });
+    await syncOrder(makeSwell() as any, makeSettings({ invoice_type: "external_sales_invoice" }), makeOrder());
+    expect(bodyOf(fetchMock, "POST /external_sales_invoices").external_sales_invoice.reference).toBe("100546");
+  });
+
+  it("searches the test reference, so a test order doesn't take a live external invoice", async () => {
+    const fetchMock = mockMoneybird();
+    await syncOrder(makeSwell() as any, makeSettings({ invoice_type: "external_sales_invoice" }), makeOrder(), { env: "test" });
+    expect(externalSearch(fetchMock).get("filter")).toBe("period:20261008..20261022,state:all");
+    expect(bodyOf(fetchMock, "POST /external_sales_invoices").external_sales_invoice.reference).toBe("Test 100546");
+  });
+
+  it("lists the seven days around the invoice date, across a month boundary", async () => {
+    const fetchMock = mockMoneybird();
+    await syncOrder(makeSwell() as any, makeSettings({ invoice_type: "external_sales_invoice" }), makeOrder({ date_created: "2026-01-02T12:00:00.000Z" }));
+    expect(externalSearch(fetchMock).get("filter")).toBe("period:20251226..20260109,state:all");
+  });
+
+  it("reads the next page of the reference search and reuses a match there", async () => {
+    const page = Array.from({ length: 100 }, (_, i) => ({ id: `other-${i}`, reference: `note-${i}` }));
+    const fetchMock = mockMoneybird({
+      "GET /external_sales_invoices": [ok(page), ok([{ id: INVOICE_ID, state: "paid", reference: "100546" }])],
+    });
+    const result = await syncOrder(makeSwell() as any, makeSettings({ invoice_type: "external_sales_invoice" }), makeOrder());
+    expect(result).toEqual({ status: "unchanged", reason: "already in Moneybird" });
+    expect(callKeys(fetchMock).filter((key) => key === "GET /external_sales_invoices")).toHaveLength(2);
+    expect(callKeys(fetchMock)).not.toContain("POST /external_sales_invoices");
+  });
+
+  it("creates the external invoice when the date window is longer than 10 pages, and doesn't run the event again", async () => {
+    const page = Array.from({ length: 100 }, (_, i) => ({ id: `other-${i}`, reference: `note-${i}` }));
+    const fetchMock = mockMoneybird({ "GET /external_sales_invoices": ok(page) });
+    const swell = makeSwell();
+    const result = await syncOrder(swell as any, makeSettings({ invoice_type: "external_sales_invoice" }), makeOrder());
+    expect(result).toMatchObject({ status: "sent", done: ["created", "payment registered"] });
+    expect(callKeys(fetchMock).filter((key) => key === "GET /external_sales_invoices")).toHaveLength(10);
+    expect(callKeys(fetchMock)).toContain("POST /external_sales_invoices");
+    expect(savedOn(swell, orderPath).moneybird_note).toBe(UNCHECKED_REFERENCE_NOTE);
+    expect(() => retryIfTemporary(result)).not.toThrow();
   });
 
   it("links an invoice an earlier run created but didn't save", async () => {
@@ -325,8 +388,8 @@ describe("syncOrder", () => {
     vi.restoreAllMocks();
     mockMoneybird({ "POST /external_sales_invoices": fail(502, "bad gateway") });
     const external = await syncOrder(makeSwell() as any, makeSettings({ invoice_type: "external_sales_invoice" }), makeOrder());
-    expect(external).toMatchObject({ status: "failed", retry: false });
-    expect(() => retryIfTemporary(external)).not.toThrow();
+    expect(external).toMatchObject({ status: "failed", retry: true });
+    expect(() => retryIfTemporary(external)).toThrow(MoneybirdError);
 
     vi.restoreAllMocks();
     mockMoneybird({ "POST /sales_invoices": fail(502, "bad gateway") });
@@ -560,8 +623,48 @@ describe("syncRefund", () => {
     });
     const swell = makeSwell();
     await syncRefund(swell as any, makeSettings(), sent({ moneybird_invoice_type: "external_sales_invoice" }), refund);
+    expect(externalSearch(fetchMock).get("filter")).toBe("period:20261009..20261023,state:all");
     expect(bodyOf(fetchMock, "POST /external_sales_invoices").external_sales_invoice.reference).toBe("100546-R100015");
     expect(savedOn(swell, orderPath).moneybird_credit_invoices).toBe("Refund 100015: external invoice 100546-R100015 (−10.00 EUR)");
+  });
+
+  it("reuses a negative external invoice that already has the refund's reference", async () => {
+    const fetchMock = mockMoneybird({
+      "GET /external_sales_invoices": ok([{ id: CREDIT_ID, state: "open", reference: "100546-R100015", total_unpaid: "-10.0" }]),
+      [`POST /external_sales_invoices/${CREDIT_ID}/payments`]: ok({ id: "pay_2" }, 201),
+    });
+    const swell = makeSwell();
+    const result = await syncRefund(swell as any, makeSettings(), sent({ moneybird_invoice_type: "external_sales_invoice" }), refund);
+    expect(result).toEqual({ status: "sent", invoice_id: CREDIT_ID, done: ["refund"] });
+    expect(callKeys(fetchMock)).not.toContain("POST /external_sales_invoices");
+    expect(savedOn(swell, orderPath).moneybird_refunds).toEqual({ [REFUND_ID]: CREDIT_ID });
+  });
+
+  it("creates the credit invoice when the refund's date window is longer than 10 pages, and doesn't run the event again", async () => {
+    const page = Array.from({ length: 100 }, (_, i) => ({ id: `other-${i}`, reference: `note-${i}` }));
+    const fetchMock = mockMoneybird({
+      "GET /external_sales_invoices": ok(page),
+      "POST /external_sales_invoices": ok({ id: CREDIT_ID, state: "open", reference: "100546-R100015", total_price_incl_tax: "-10.0" }, 201),
+      [`POST /external_sales_invoices/${CREDIT_ID}/payments`]: ok({ id: "pay_2" }, 201),
+    });
+    const swell = makeSwell();
+    const result = await syncRefund(
+      swell as any,
+      makeSettings(),
+      sent({ moneybird_invoice_type: "external_sales_invoice", moneybird_note: "earlier" }),
+      refund,
+    );
+    expect(result).toMatchObject({ status: "sent", invoice_id: CREDIT_ID });
+    expect(callKeys(fetchMock)).toContain("POST /external_sales_invoices");
+    expect(savedOn(swell, orderPath).moneybird_note).toBe(`earlier ${UNCHECKED_REFERENCE_NOTE}`);
+    expect(() => retryIfTemporary(result)).not.toThrow();
+  });
+
+  it("retries an external credit invoice whose create failed, because the next run finds it by reference", async () => {
+    mockMoneybird({ "POST /external_sales_invoices": fail(502, "bad gateway") });
+    const result = await syncRefund(makeSwell() as any, makeSettings(), sent({ moneybird_invoice_type: "external_sales_invoice" }), refund);
+    expect(result).toMatchObject({ status: "failed", retry: true, reason: expect.stringContaining("couldn't create the credit invoice") });
+    expect(() => retryIfTemporary(result)).toThrow(MoneybirdError);
   });
 
   it("skips orders not in Moneybird, refunds already sent and empty refunds", async () => {
