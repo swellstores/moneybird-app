@@ -305,8 +305,30 @@ export function orderReference(order: any, env?: 'test' | null, settings?: Pick<
 }
 
 // the reference of an external sales invoice, shown as its number: the order number, or the merchant's template;
-// subscription invoices get a prefix, as their numbers can be the same as order numbers
-export function externalReference(order: any, settings?: Pick<MoneybirdSettings, 'order_reference' | 'invoice_reference'>) {
+// subscription invoices get a prefix, as their numbers can be the same as order numbers.
+// Test and live can share an administration, so a test document never uses a live reference. With a template the
+// test mark is " (test)" at the end. Without one it stays the form main used: "Test <number>" or "Test INV-<number>".
+export function externalReference(order: any, env?: 'test' | null, settings?: Pick<MoneybirdSettings, 'order_reference' | 'invoice_reference'>) {
+  const base = externalBase(order, settings);
+  if (env !== 'test') return base;
+  return referenceTemplate(kindOf(order), settings) ? `${base} (test)` : `Test ${base}`;
+}
+
+// a negative external invoice. The refund suffix is added to the unmarked reference first, and only then is the
+// test mark applied, so a template becomes "<reference>-R<n> (test)" and not "<reference> (test)-R<n>".
+export function externalRefundReference(
+  order: any,
+  refund: { id: string; number?: string },
+  env?: 'test' | null,
+  settings?: Pick<MoneybirdSettings, 'order_reference' | 'invoice_reference'>,
+): string {
+  const label = refund.number || String(refund.id).slice(-6);
+  const reference = `${externalBase(order, settings)}-R${label}`;
+  if (env !== 'test') return reference;
+  return referenceTemplate(kindOf(order), settings) ? `${reference} (test)` : `Test ${reference}`;
+}
+
+function externalBase(order: any, settings?: Pick<MoneybirdSettings, 'order_reference' | 'invoice_reference'>): string {
   const kind = kindOf(order);
   const template = referenceTemplate(kind, settings);
   if (template) return fillTemplate(template, order);
@@ -484,7 +506,7 @@ export async function syncOrder(swell: SwellClient, settings: MoneybirdSettings,
       const { details, unmatched } = detailsAttributes(orderLines(order), rates, typed, order.billing?.country || order.shipping?.country);
       const invoice = await createDocument(typed, {
         contactId,
-        reference: type === 'sales_invoice' ? orderReference(order, options.env, settings) : externalReference(order, settings),
+        reference: type === 'sales_invoice' ? orderReference(order, options.env, settings) : externalReference(order, options.env, settings),
         date: day(order.date_created),
         currency: order.currency,
         inclTax: Boolean(order.item_tax_included),
@@ -625,7 +647,7 @@ export async function syncRefund(
       const { details } = detailsAttributes(refundLines(order, amount), rates, typed, order.billing?.country || order.shipping?.country);
       invoice = await createDocument(typed, {
         contactId,
-        reference: type === 'sales_invoice' ? `${label} of ${of}` : `${externalReference(order, settings)}-R${refund.number || refundId.slice(-6)}`,
+        reference: type === 'sales_invoice' ? `${label} of ${of}` : externalRefundReference(order, { id: refundId, number: refund.number }, options.env, settings),
         date: day(refund.date_created),
         currency: order.currency,
         inclTax: Boolean(order.item_tax_included),

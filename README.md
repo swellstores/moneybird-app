@@ -35,9 +35,10 @@ When an order is paid (`order.paid`), and it isn't a draft and its total is abov
      app looks for an invoice with that reference (`find_by_reference`), so an invoice created by a run whose result
      wasn't saved is reused. Test orders have their own reference, so a test order never takes over the invoice of a
      live order with the same number when both environments use one administration.
-   - *External sales invoices*: `POST /external_sales_invoices` with the order number as reference, source `Swell`
-     and a link back to the order in the Swell dashboard (`source_url`, `…/admin/orders/<id>`, or
-     `…/admin/test/orders/<id>` in the test environment).
+   - *External sales invoices*: `POST /external_sales_invoices` with the order number as reference (`Test <number>`
+     in the test environment, or the **Order reference** template, below), source `Swell` and a link back to the
+     order in the Swell dashboard (`source_url`, `…/admin/orders/<id>`, or `…/admin/test/orders/<id>` in the test
+     environment).
 3. **Number** – a new sales invoice is a draft without a number. With **New sales invoices** set to *Mark as sent*
    (default) the app sends it with `delivery_method: Manual` (no email); with *Email to the customer* Moneybird
    emails it; with *Leave as draft* it stays a draft and the payment isn't registered.
@@ -57,9 +58,13 @@ else the `transaction_id` of the order's last successful Swell payment (the gate
 
 **References.** **Order reference** and **Subscription invoice reference** replace the default references with a
 template, used for sales and external sales invoices alike and for the lookups above: `{number}` is the Swell number
-(added at the end when a template leaves it out, so references stay unique), and the test environment adds
-` (test)`. Credit invoices become `Refund <n> of <reference>` and `<reference>-R<n>`. Set a template before the
-first order is sent: an invoice an earlier run created under another reference and didn't save isn't found again.
+(added at the end when a template leaves it out, so references stay unique). In the test environment a template gets
+` (test)` at the end of the whole reference. An external refund is built first and marked after that, so it becomes
+`<reference>-R<n> (test)` and not `<reference> (test)-R<n>`. Without a template, a test sales invoice stays
+`Test order <number>` or `Test invoice <number>`, and a test external invoice stays `Test <number>` or
+`Test INV-<number>` (its refund `Test <number>-R<n>` or `Test INV-<number>-R<n>`). A credit sales invoice becomes
+`Refund <n> of <reference>`. Set a template before the first order is sent: an invoice an earlier run created under
+another reference and didn't save isn't found again.
 
 **Skipping orders.** With **Skip orders where this field is set**, an order (or subscription invoice) that has a
 value at that dot path, e.g. `metadata.test` or a custom field, isn't sent ("metadata.test is set on the order"):
@@ -92,8 +97,8 @@ gives it the order field names):
 - the contact is the invoice's customer, with the subscription's billing and shipping details (the customer's saved
   ones when the invoice has no subscription);
 - the sales invoice's reference is `Invoice <number>` (`Test invoice <number>` in the test environment); an external
-  sales invoice gets `INV-<number>`, because subscription invoice numbers and order numbers come from separate
-  sequences and can be the same;
+  sales invoice gets `INV-<number>` (`Test INV-<number>` in the test environment), because subscription invoice
+  numbers and order numbers come from separate sequences and can be the same;
 - the lines are the invoice's items (the product's name, else the item's description) and its shipping total
   (`shipment_total`, `Shipping – <service>` with the subscription's shipping service);
 - the payment is dated on the invoice's last successful Swell payment and identified like an order's payment (the
@@ -113,8 +118,9 @@ With **Send refunds** on, each successful Swell refund of an order that is in Mo
 - a credit sales invoice (reference `Refund <refund number> of order <number>`, dated on the refund) for sales
   invoices; **New sales invoices** applies to it like to invoices, and with **Register payments** on it gets a negative
   payment; or
-- a negative external sales invoice (reference `<order number>-R<refund number>`) for external invoices, with a
-  negative payment when **Register payments** is on.
+- a negative external sales invoice (reference `<order number>-R<refund number>`, `Test <number>-R<n>` in the test
+  environment, or `<reference>-R<n> (test)` when a template is set) for external invoices, with a negative payment
+  when **Register payments** is on.
 
 The type is the one the order's invoice was created as. Its lines are the refunded share of the order, one per tax
 percentage (`Refund of order <number>`, with `(21% tax)` added when the order has several percentages), so the tax is
@@ -127,8 +133,8 @@ payment an earlier run registered isn't registered twice.
 
 A refund of a subscription invoice has no order; its payment has the invoice (`payments.invoice_id`), so the app reads
 the refund's payment, then the invoice, and books the credit invoice on it the same way (reference `Refund <refund
-number> of invoice <number>`, or `INV-<number>-R<refund number>`), when **Send subscription invoices** is on. Refunds
-of payments without an order or an invoice aren't sent.
+number> of invoice <number>`, or `INV-<number>-R<refund number>`, `Test INV-<number>-R<n>` in the test environment),
+when **Send subscription invoices** is on. Refunds of payments without an order or an invoice aren't sent.
 
 ### Contacts
 
@@ -275,8 +281,9 @@ add the …").
   pages). Create the missing rates in Moneybird, or set a default tax rate; the order's note lists the percentages
   without a match.
 - **Test and live environments** – each environment sends its own orders. Order links in Moneybird open the order in
-  the environment it came from, and test sales invoices are referenced `Test order <number>`. Test and live can use
-  one administration or separate ones.
+  the environment it came from. Test sales invoices are referenced `Test order <number>`, test external invoices
+  `Test <number>` (or the template with ` (test)` at the end). Test and live can use one administration or separate
+  ones.
 - **Totals** – Moneybird calculates tax per line, so with prices that exclude tax its total can differ from Swell's by
   a cent; the order's note says so, and the payment registered is Moneybird's unpaid total.
 - **Contacts** are matched by Swell customer ID. A contact created in Moneybird by hand isn't linked unless its

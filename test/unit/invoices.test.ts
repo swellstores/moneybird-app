@@ -3,6 +3,7 @@ import {
   contactFields,
   detailsAttributes,
   externalReference,
+  externalRefundReference,
   forInvoice,
   orderLines,
   orderReference,
@@ -570,12 +571,23 @@ describe("reference templates", () => {
     expect(orderReference(makeOrder(), null, templates)).toBe("orders-100546");
     expect(orderReference(makeOrder(), "test", templates)).toBe("orders-100546 (test)");
     expect(orderReference(forInvoice(makeSubscriptionInvoice()), null, templates)).toBe("invoices-100021");
-    expect(externalReference(makeOrder(), templates)).toBe("orders-100546");
-    expect(externalReference(forInvoice(makeSubscriptionInvoice()), templates)).toBe("invoices-100021");
+    expect(externalReference(makeOrder(), null, templates)).toBe("orders-100546");
+    expect(externalReference(makeOrder(), "test", templates)).toBe("orders-100546 (test)");
+    expect(externalReference(forInvoice(makeSubscriptionInvoice()), null, templates)).toBe("invoices-100021");
+    expect(externalReference(forInvoice(makeSubscriptionInvoice()), "test", templates)).toBe("invoices-100021 (test)");
+    expect(externalRefundReference(makeOrder(), { id: REFUND_ID, number: "100015" }, null, templates)).toBe("orders-100546-R100015");
+    expect(externalRefundReference(makeOrder(), { id: REFUND_ID, number: "100015" }, "test", templates)).toBe("orders-100546-R100015 (test)");
+    expect(externalRefundReference(forInvoice(makeSubscriptionInvoice()), { id: REFUND_ID, number: "100097" }, "test", templates)).toBe("invoices-100021-R100097 (test)");
     expect(orderReference(makeOrder(), null, makeSettings({ order_reference: "SMPL" }))).toBe("SMPL 100546");
-    // without templates nothing changes
+    // without a template, sales invoices keep their own test reference and external invoices keep main's
     expect(orderReference(makeOrder(), "test", makeSettings())).toBe("Test order 100546");
-    expect(externalReference(makeOrder(), makeSettings())).toBe("100546");
+    expect(externalReference(makeOrder(), null, makeSettings())).toBe("100546");
+    expect(externalReference(makeOrder(), "test")).toBe("Test 100546");
+    expect(externalReference(forInvoice(makeSubscriptionInvoice()), "test")).toBe("Test INV-100021");
+    expect(externalRefundReference(makeOrder(), { id: REFUND_ID, number: "2" }, "test")).toBe("Test 100546-R2");
+    expect(externalRefundReference(forInvoice(makeSubscriptionInvoice()), { id: REFUND_ID, number: "3" }, "test")).toBe("Test INV-100021-R3");
+    expect(externalRefundReference(makeOrder(), { id: REFUND_ID, number: "2" })).toBe("100546-R2");
+    expect(externalRefundReference(forInvoice(makeSubscriptionInvoice()), { id: REFUND_ID, number: "3" })).toBe("INV-100021-R3");
   });
 
   it("creates and finds the invoice by the template, and names credit invoices after it", async () => {
@@ -602,6 +614,18 @@ describe("reference templates", () => {
     const external = withApp({ moneybird_invoice_id: INVOICE_ID, moneybird_invoice_type: "external_sales_invoice" });
     await syncRefund(makeSwell() as any, { ...templates, register_payments: false }, external, { id: REFUND_ID, amount: 10, number: "100015" });
     expect(bodyOf(externalMock, "POST /external_sales_invoices").external_sales_invoice.reference).toBe("orders-100546-R100015");
+  });
+
+  it("marks the external invoice and its refund in the test environment, with the mark after the refund suffix", async () => {
+    const fetchMock = mockMoneybird();
+    await syncOrder(makeSwell() as any, { ...templates, invoice_type: "external_sales_invoice" }, makeOrder(), { env: "test" });
+    expect(bodyOf(fetchMock, "POST /external_sales_invoices").external_sales_invoice.reference).toBe("orders-100546 (test)");
+
+    vi.restoreAllMocks();
+    const refundMock = mockMoneybird({ "POST /external_sales_invoices": ok({ id: CREDIT_ID, state: "open", reference: "invoices-100021-R100097 (test)", total_price_incl_tax: "-10.0" }, 201) });
+    const invoice = forInvoice(makeSubscriptionInvoice({ $app: { moneybird: { moneybird_invoice_id: INVOICE_ID, moneybird_invoice_type: "external_sales_invoice" } } }));
+    await syncRefund(makeSwell() as any, { ...templates, register_payments: false }, invoice, { id: REFUND_ID, amount: 10, number: "100097" }, { env: "test" });
+    expect(bodyOf(refundMock, "POST /external_sales_invoices").external_sales_invoice.reference).toBe("invoices-100021-R100097 (test)");
   });
 });
 

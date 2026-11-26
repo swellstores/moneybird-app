@@ -443,6 +443,7 @@ describe("environments", () => {
     let fetchMock = mockMoneybird();
     await orderEvents(request({ id: ORDER_ID }, {}, external, testEnv).req);
     expect(bodyOf(fetchMock, "POST /external_sales_invoices").external_sales_invoice.source_url).toBe(`${STORE_URL}/admin/test/orders/${ORDER_ID}`);
+    expect(bodyOf(fetchMock, "POST /external_sales_invoices").external_sales_invoice.reference).toBe("Test 100546");
 
     vi.restoreAllMocks();
     // a live invoice with "Order 100546" exists, but a test order looks for its own reference only
